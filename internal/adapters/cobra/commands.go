@@ -23,8 +23,12 @@ type projectService interface {
 
 type memoryService interface {
 	Create(context.Context, memory.CreateInput) (memory.Memory, error)
-	Get(context.Context, string) (memory.Memory, error)
+	Update(context.Context, string, int, memory.UpdateInput) (memory.Memory, error)
+	Delete(context.Context, string, int) (memory.Memory, error)
+	Restore(context.Context, string, int, int) (memory.Memory, error)
+	Get(context.Context, string, bool) (memory.Memory, error)
 	List(context.Context, memory.ListFilter) ([]memory.Memory, error)
+	History(context.Context, string) ([]memory.Revision, error)
 }
 
 // Execute parses args and returns a buffered successful response.
@@ -104,13 +108,7 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 			return errors.New("invalid input")
 		}
 		var value memory.CreateInput
-		decoder := json.NewDecoder(input)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&value); err != nil {
-			return errors.New("invalid input")
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err := decodeStrict(input, &value); err != nil {
 			return errors.New("invalid input")
 		}
 		created, err := service.Create(command.Context(), value)
@@ -120,23 +118,26 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 		return writeJSON(output, memorySuccess{OK: true, Data: toMemoryJSON(created)})
 	}}
 	createCommand.Flags().StringVar(&inputSource, "input", "", "read one JSON object from stdin")
+	var includeDeletedGet bool
 	getCommand := &spf13cobra.Command{Use: "get <memory-id>", Args: func(_ *spf13cobra.Command, args []string) error {
 		if len(args) != 1 {
 			return errors.New("invalid input")
 		}
 		return nil
 	}, RunE: func(command *spf13cobra.Command, args []string) error {
-		value, err := service.Get(command.Context(), args[0])
+		value, err := service.Get(command.Context(), args[0], includeDeletedGet)
 		if err != nil {
 			return err
 		}
 		return writeJSON(output, memorySuccess{OK: true, Data: toMemoryJSON(value)})
 	}}
+	getCommand.Flags().BoolVar(&includeDeletedGet, "include-deleted", false, "include a deleted memory")
 	var kind string
 	var tags []string
 	var minImportance, minConfidence int
+	var includeDeletedList bool
 	listCommand := &spf13cobra.Command{Use: "list", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
-		values, err := service.List(command.Context(), memory.ListFilter{Type: kind, Tags: tags, MinImportance: minImportance, MinConfidence: minConfidence})
+		values, err := service.List(command.Context(), memory.ListFilter{Type: kind, Tags: tags, MinImportance: minImportance, MinConfidence: minConfidence, IncludeDeleted: includeDeletedList})
 		if err != nil {
 			return err
 		}
@@ -150,7 +151,70 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 	listCommand.Flags().StringArrayVar(&tags, "tag", nil, "required tag (repeatable)")
 	listCommand.Flags().IntVar(&minImportance, "min-importance", 0, "minimum importance")
 	listCommand.Flags().IntVar(&minConfidence, "min-confidence", 0, "minimum confidence")
-	root.AddCommand(createCommand, getCommand, listCommand)
+	listCommand.Flags().BoolVar(&includeDeletedList, "include-deleted", false, "include deleted memories")
+
+	var updateInput string
+	var updateExpected int
+	updateCommand := &spf13cobra.Command{Use: "update <memory-id>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+		if !command.Flags().Changed("expected-version") || updateExpected < 1 || !command.Flags().Changed("input") || updateInput != "-" || input == nil {
+			return errors.New("invalid input")
+		}
+		var patch memory.UpdateInput
+		if err := decodeStrict(input, &patch); err != nil {
+			return errors.New("invalid input")
+		}
+		value, err := service.Update(command.Context(), args[0], updateExpected, patch)
+		if err != nil {
+			return err
+		}
+		return writeJSON(output, memorySuccess{OK: true, Data: toMemoryJSON(value)})
+	}}
+	updateCommand.Flags().IntVar(&updateExpected, "expected-version", 0, "current memory version")
+	updateCommand.Flags().StringVar(&updateInput, "input", "", "read one JSON object from stdin")
+
+	var deleteExpected int
+	deleteCommand := &spf13cobra.Command{Use: "delete <memory-id>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+		if !command.Flags().Changed("expected-version") || deleteExpected < 1 {
+			return errors.New("invalid input")
+		}
+		value, err := service.Delete(command.Context(), args[0], deleteExpected)
+		if err != nil {
+			return err
+		}
+		return writeJSON(output, memorySuccess{OK: true, Data: toMemoryJSON(value)})
+	}}
+	deleteCommand.Flags().IntVar(&deleteExpected, "expected-version", 0, "current memory version")
+
+	var restoreVersion, restoreExpected int
+	restoreCommand := &spf13cobra.Command{Use: "restore <memory-id>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+		if !command.Flags().Changed("version") || restoreVersion < 1 || !command.Flags().Changed("expected-version") || restoreExpected < 1 {
+			return errors.New("invalid input")
+		}
+		value, err := service.Restore(command.Context(), args[0], restoreVersion, restoreExpected)
+		if err != nil {
+			return err
+		}
+		return writeJSON(output, memorySuccess{OK: true, Data: toMemoryJSON(value)})
+	}}
+	restoreCommand.Flags().IntVar(&restoreVersion, "version", 0, "revision version to restore")
+	restoreCommand.Flags().IntVar(&restoreExpected, "expected-version", 0, "current memory version")
+
+	historyCommand := &spf13cobra.Command{Use: "history <memory-id>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+		values, err := service.History(command.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		items := make([]revisionJSON, 0, len(values))
+		for _, value := range values {
+			item, convertErr := toRevisionJSON(value)
+			if convertErr != nil {
+				return convertErr
+			}
+			items = append(items, item)
+		}
+		return writeJSON(output, historySuccess{OK: true, Data: historyData{Revisions: items}})
+	}}
+	root.AddCommand(createCommand, updateCommand, deleteCommand, restoreCommand, getCommand, listCommand, historyCommand)
 }
 
 type tagJSON struct {
@@ -185,6 +249,22 @@ type memoryListSuccess struct {
 	OK   bool           `json:"ok"`
 	Data memoryListData `json:"data"`
 }
+type revisionJSON struct {
+	Version      int        `json:"version"`
+	Operation    string     `json:"operation"`
+	AgentName    *string    `json:"agent_name"`
+	AgentRole    string     `json:"agent_role"`
+	WorktreeRoot string     `json:"worktree_root"`
+	CreatedAt    string     `json:"created_at"`
+	Snapshot     memoryJSON `json:"snapshot"`
+}
+type historyData struct {
+	Revisions []revisionJSON `json:"revisions"`
+}
+type historySuccess struct {
+	OK   bool        `json:"ok"`
+	Data historyData `json:"data"`
+}
 
 func toMemoryJSON(value memory.Memory) memoryJSON {
 	tags := make([]tagJSON, 0, len(value.Tags))
@@ -201,6 +281,32 @@ func toMemoryJSON(value memory.Memory) memoryJSON {
 		deleted = &formatted
 	}
 	return memoryJSON{ID: value.ID, Version: value.Version, Type: value.Type, Title: value.Title, Content: value.Content, Importance: value.Importance, Confidence: value.Confidence, Attributes: attributes, Tags: tags, ContentHash: value.ContentHash, CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: value.UpdatedAt.UTC().Format(time.RFC3339), DeletedAt: deleted}
+}
+func toRevisionJSON(value memory.Revision) (revisionJSON, error) {
+	snapshot, err := memory.FromSnapshot(value.Snapshot)
+	if err != nil {
+		return revisionJSON{}, memory.NewError(memory.CodeStoreError, err)
+	}
+	return revisionJSON{Version: value.Version, Operation: value.Operation, AgentName: value.AgentName, AgentRole: value.AgentRole, WorktreeRoot: value.WorktreeRoot, CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), Snapshot: toMemoryJSON(snapshot)}, nil
+}
+
+func decodeStrict(input io.Reader, value any) error {
+	decoder := json.NewDecoder(input)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("invalid input")
+	}
+	return nil
+}
+func oneArg(_ *spf13cobra.Command, args []string) error {
+	if len(args) != 1 {
+		return errors.New("invalid input")
+	}
+	return nil
 }
 
 func invalidArgs(_ *spf13cobra.Command, args []string) error {

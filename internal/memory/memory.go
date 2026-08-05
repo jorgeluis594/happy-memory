@@ -1,4 +1,4 @@
-// Package memory implements creation and active-memory queries.
+// Package memory implements memory lifecycle rules and queries.
 package memory
 
 import (
@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ const (
 	CodeValidationError = "VALIDATION_ERROR"
 	CodeNotFound        = "MEMORY_NOT_FOUND"
 	CodeDuplicate       = "DUPLICATE_MEMORY"
+	CodeVersionConflict = "VERSION_CONFLICT"
 	CodeStoreError      = "STORE_ERROR"
 )
 
@@ -55,7 +57,7 @@ func ErrorDetails(err error) map[string]any {
 	return map[string]any{}
 }
 
-// Agent describes free-form creation provenance.
+// Agent describes optional mutation provenance.
 type Agent struct {
 	Name *string `json:"name,omitempty"`
 	Role *string `json:"role,omitempty"`
@@ -73,6 +75,76 @@ type CreateInput struct {
 	Agent      *Agent          `json:"agent,omitempty"`
 }
 
+// Field preserves the difference between an absent patch member and its zero value.
+type Field[T any] struct {
+	Set   bool
+	Value T
+}
+
+// UpdateInput is a presence-aware partial memory update.
+type UpdateInput struct {
+	Type       Field[string]
+	Title      Field[string]
+	Content    Field[string]
+	Importance Field[int]
+	Confidence Field[int]
+	Attributes Field[json.RawMessage]
+	Tags       Field[[]string]
+	Agent      *Agent
+}
+
+// UnmarshalJSON rejects unknown fields and models attributes:null distinctly.
+func (in *UpdateInput) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+		return validation()
+	}
+	for key, value := range raw {
+		switch key {
+		case "type":
+			in.Type.Set = true
+			if json.Unmarshal(value, &in.Type.Value) != nil {
+				return validation()
+			}
+		case "title":
+			in.Title.Set = true
+			if json.Unmarshal(value, &in.Title.Value) != nil {
+				return validation()
+			}
+		case "content":
+			in.Content.Set = true
+			if json.Unmarshal(value, &in.Content.Value) != nil {
+				return validation()
+			}
+		case "importance":
+			in.Importance.Set = true
+			if json.Unmarshal(value, &in.Importance.Value) != nil {
+				return validation()
+			}
+		case "confidence":
+			in.Confidence.Set = true
+			if json.Unmarshal(value, &in.Confidence.Value) != nil {
+				return validation()
+			}
+		case "attributes":
+			in.Attributes.Set = true
+			in.Attributes.Value = cloneJSON(value)
+		case "tags":
+			in.Tags.Set = true
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &in.Tags.Value) != nil {
+				return validation()
+			}
+		case "agent":
+			if json.Unmarshal(value, &in.Agent) != nil {
+				return validation()
+			}
+		default:
+			return validation()
+		}
+	}
+	return nil
+}
+
 // Tag is a project-scoped canonical tag.
 type Tag struct {
 	ID             string    `json:"id"`
@@ -83,20 +155,15 @@ type Tag struct {
 
 // Memory is the current persisted state of one memory.
 type Memory struct {
-	ID          string
-	ProjectID   string
-	Version     int
-	Type        string
-	Title       string
-	Content     string
-	Importance  int
-	Confidence  int
-	Attributes  json.RawMessage
-	Tags        []Tag
-	ContentHash string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   *time.Time
+	ID, ProjectID          string
+	Version                int
+	Type, Title, Content   string
+	Importance, Confidence int
+	Attributes             json.RawMessage
+	Tags                   []Tag
+	ContentHash            string
+	CreatedAt, UpdatedAt   time.Time
+	DeletedAt              *time.Time
 }
 
 // Revision is an immutable snapshot and its provenance.
@@ -110,12 +177,12 @@ type Revision struct {
 	CreatedAt               time.Time
 }
 
-// ListFilter restricts active memory queries.
+// ListFilter restricts project-scoped memory queries.
 type ListFilter struct {
-	Type          string
-	Tags          []string
-	MinImportance int
-	MinConfidence int
+	Type                         string
+	Tags                         []string
+	MinImportance, MinConfidence int
+	IncludeDeleted               bool
 }
 
 // CreateRecord groups the state written by one atomic creation.
@@ -124,11 +191,21 @@ type CreateRecord struct {
 	Revision Revision
 }
 
+// MutationRecord groups a CAS mutation and its new revision.
+type MutationRecord struct {
+	Memory          Memory
+	Revision        Revision
+	ExpectedVersion int
+}
+
 // Repository persists and queries project-scoped memories.
 type Repository interface {
 	Create(context.Context, CreateRecord) (Memory, error)
-	Get(context.Context, string, string) (Memory, error)
+	Get(context.Context, string, string, bool) (Memory, error)
 	List(context.Context, string, ListFilter) ([]Memory, error)
+	Mutate(context.Context, MutationRecord) (Memory, error)
+	History(context.Context, string, string) ([]Revision, error)
+	Revision(context.Context, string, string, int) (Revision, error)
 }
 
 // ProjectContext identifies the current project and worktree.
@@ -145,7 +222,7 @@ type Clock interface{ Now() time.Time }
 // IDGenerator supplies public identifiers.
 type IDGenerator interface{ New() string }
 
-// Service implements memory use cases.
+// Service implements memory lifecycle use cases.
 type Service struct {
 	projects ProjectResolver
 	repo     Repository
@@ -153,9 +230,9 @@ type Service struct {
 	ids      IDGenerator
 }
 
-// NewService composes memory use cases.
+// NewService composes memory lifecycle use cases.
 func NewService(p ProjectResolver, r Repository, c Clock, ids IDGenerator) *Service {
-	return &Service{projects: p, repo: r, clock: c, ids: ids}
+	return &Service{p, r, c, ids}
 }
 
 // Create validates and atomically persists a new memory.
@@ -167,40 +244,32 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Memory, error) {
 	if err != nil {
 		return Memory{}, err
 	}
-	now := s.clock.Now().UTC().Truncate(time.Second)
+	now := s.now()
 	m := Memory{ID: s.ids.New(), ProjectID: p.ID, Version: 1, Type: in.Type, Title: in.Title, Content: in.Content, Importance: in.Importance, Confidence: in.Confidence, Attributes: cloneJSON(in.Attributes), ContentHash: ContentHash(in.Type, in.Title, in.Content), CreatedAt: now, UpdatedAt: now}
 	for _, name := range in.Tags {
 		m.Tags = append(m.Tags, Tag{ID: s.ids.New(), Name: name, NormalizedName: NormalizeTag(name), CreatedAt: now})
 	}
-	role := "unknown"
-	var agentName *string
-	if in.Agent != nil {
-		agentName = in.Agent.Name
-		if in.Agent.Role != nil {
-			role = *in.Agent.Role
-		}
-	}
-	snapshot, err := SnapshotJSON(m, agentName, role, p.WorktreeRoot)
+	name, role := provenance(in.Agent)
+	revision, err := buildRevision(m, "create", name, role, p.WorktreeRoot, now)
 	if err != nil {
-		return Memory{}, NewError(CodeStoreError, err)
+		return Memory{}, err
 	}
-	r := Revision{MemoryID: m.ID, ProjectID: p.ID, Version: 1, Operation: "create", Snapshot: snapshot, AgentName: agentName, AgentRole: role, WorktreeRoot: p.WorktreeRoot, CreatedAt: now}
-	return s.repo.Create(ctx, CreateRecord{Memory: m, Revision: r})
+	return s.repo.Create(ctx, CreateRecord{m, revision})
 }
 
-// Get returns one active memory from the current project.
-func (s *Service) Get(ctx context.Context, id string) (Memory, error) {
-	if _, err := uuid.Parse(id); err != nil {
+// Get returns one memory and optionally includes a deleted state.
+func (s *Service) Get(ctx context.Context, id string, includeDeleted bool) (Memory, error) {
+	if !validID(id) {
 		return Memory{}, validation()
 	}
 	p, err := s.projects.Current(ctx)
 	if err != nil {
 		return Memory{}, err
 	}
-	return s.repo.Get(ctx, p.ID, id)
+	return s.repo.Get(ctx, p.ID, id, includeDeleted)
 }
 
-// List returns filtered active memories from the current project.
+// List returns filtered memories from the current project.
 func (s *Service) List(ctx context.Context, f ListFilter) ([]Memory, error) {
 	if err := ValidateFilter(&f); err != nil {
 		return nil, err
@@ -212,7 +281,138 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Memory, error) {
 	return s.repo.List(ctx, p.ID, f)
 }
 
-// NormalizeAndValidate canonicalizes and validates creation input.
+// Update applies a normalized partial update with optimistic concurrency.
+func (s *Service) Update(ctx context.Context, id string, expected int, in UpdateInput) (Memory, error) {
+	if !validID(id) || expected < 1 {
+		return Memory{}, validation()
+	}
+	p, current, err := s.current(ctx, id)
+	if err != nil {
+		return Memory{}, err
+	}
+	if err = checkVersion(current, expected); err != nil {
+		return Memory{}, err
+	}
+	if current.DeletedAt != nil {
+		return Memory{}, validation()
+	}
+	next := cloneMemory(current)
+	applyPatch(&next, in)
+	create := CreateInput{Type: next.Type, Title: next.Title, Content: next.Content, Importance: next.Importance, Confidence: next.Confidence, Attributes: next.Attributes, Tags: tagNames(next.Tags), Agent: in.Agent}
+	if in.Tags.Set {
+		create.Tags = append([]string(nil), in.Tags.Value...)
+	}
+	if err = NormalizeAndValidate(&create); err != nil {
+		return Memory{}, err
+	}
+	next.Type, next.Title, next.Content, next.Importance, next.Confidence, next.Attributes = create.Type, create.Title, create.Content, create.Importance, create.Confidence, cloneJSON(create.Attributes)
+	if in.Tags.Set {
+		next.Tags = make([]Tag, 0, len(create.Tags))
+		for _, tag := range create.Tags {
+			next.Tags = append(next.Tags, Tag{ID: s.ids.New(), Name: tag, NormalizedName: NormalizeTag(tag), CreatedAt: s.now()})
+		}
+	}
+	if equivalent(current, next) {
+		return current, nil
+	}
+	next.Version++
+	next.UpdatedAt = s.now()
+	next.ContentHash = ContentHash(next.Type, next.Title, next.Content)
+	name, role := provenance(in.Agent)
+	rev, e := buildRevision(next, "update", name, role, p.WorktreeRoot, next.UpdatedAt)
+	if e != nil {
+		return Memory{}, e
+	}
+	return s.repo.Mutate(ctx, MutationRecord{next, rev, expected})
+}
+
+// Delete logically deletes an active memory.
+func (s *Service) Delete(ctx context.Context, id string, expected int) (Memory, error) {
+	if !validID(id) || expected < 1 {
+		return Memory{}, validation()
+	}
+	p, current, err := s.current(ctx, id)
+	if err != nil {
+		return Memory{}, err
+	}
+	if err = checkVersion(current, expected); err != nil {
+		return Memory{}, err
+	}
+	if current.DeletedAt != nil {
+		return Memory{}, validation()
+	}
+	now := s.now()
+	next := cloneMemory(current)
+	next.Version++
+	next.UpdatedAt = now
+	next.DeletedAt = &now
+	rev, e := buildRevision(next, "delete", nil, "unknown", p.WorktreeRoot, now)
+	if e != nil {
+		return Memory{}, e
+	}
+	return s.repo.Mutate(ctx, MutationRecord{next, rev, expected})
+}
+
+// Restore reactivates a deleted memory from a historical revision.
+func (s *Service) Restore(ctx context.Context, id string, version, expected int) (Memory, error) {
+	if !validID(id) || version < 1 || expected < 1 {
+		return Memory{}, validation()
+	}
+	p, current, err := s.current(ctx, id)
+	if err != nil {
+		return Memory{}, err
+	}
+	if err = checkVersion(current, expected); err != nil {
+		return Memory{}, err
+	}
+	if current.DeletedAt == nil {
+		return Memory{}, validation()
+	}
+	rev, err := s.repo.Revision(ctx, p.ID, id, version)
+	if err != nil {
+		return Memory{}, err
+	}
+	restored, err := FromSnapshot(rev.Snapshot)
+	if err != nil {
+		return Memory{}, NewError(CodeStoreError, err)
+	}
+	now := s.now()
+	restored.ProjectID = p.ID
+	restored.ID = id
+	restored.Version = current.Version + 1
+	restored.CreatedAt = current.CreatedAt
+	restored.UpdatedAt = now
+	restored.DeletedAt = nil
+	restored.ContentHash = ContentHash(restored.Type, restored.Title, restored.Content)
+	newRev, e := buildRevision(restored, "restore", nil, "unknown", p.WorktreeRoot, now)
+	if e != nil {
+		return Memory{}, e
+	}
+	return s.repo.Mutate(ctx, MutationRecord{restored, newRev, expected})
+}
+
+// History returns all revisions for an active or deleted memory.
+func (s *Service) History(ctx context.Context, id string) ([]Revision, error) {
+	if !validID(id) {
+		return nil, validation()
+	}
+	p, err := s.projects.Current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.History(ctx, p.ID, id)
+}
+func (s *Service) current(ctx context.Context, id string) (ProjectContext, Memory, error) {
+	p, err := s.projects.Current(ctx)
+	if err != nil {
+		return p, Memory{}, err
+	}
+	m, err := s.repo.Get(ctx, p.ID, id, true)
+	return p, m, err
+}
+func (s *Service) now() time.Time { return s.clock.Now().UTC().Truncate(time.Second) }
+
+// NormalizeAndValidate canonicalizes and validates a complete state.
 func NormalizeAndValidate(in *CreateInput) error {
 	in.Type = strings.TrimSpace(in.Type)
 	in.Title = normalizeText(in.Title)
@@ -220,18 +420,11 @@ func NormalizeAndValidate(in *CreateInput) error {
 	if !validTypes[in.Type] || in.Title == "" || in.Content == "" || in.Importance < 1 || in.Importance > 5 || in.Confidence < 1 || in.Confidence > 5 {
 		return validation()
 	}
-	if len(in.Attributes) > 0 && !bytes.Equal(bytes.TrimSpace(in.Attributes), []byte("null")) {
-		var obj map[string]any
-		d := json.NewDecoder(bytes.NewReader(in.Attributes))
-		d.UseNumber()
-		if d.Decode(&obj) != nil || obj == nil {
-			return validation()
-		}
-		canonical, _ := json.Marshal(obj)
-		in.Attributes = canonical
-	} else {
-		in.Attributes = nil
+	attrs, err := normalizeAttributes(in.Attributes)
+	if err != nil {
+		return err
 	}
+	in.Attributes = attrs
 	seen := map[string]bool{}
 	for i, name := range in.Tags {
 		name = strings.TrimSpace(name)
@@ -242,23 +435,7 @@ func NormalizeAndValidate(in *CreateInput) error {
 		seen[norm] = true
 		in.Tags[i] = name
 	}
-	if in.Agent != nil {
-		if in.Agent.Name != nil {
-			v := strings.TrimSpace(*in.Agent.Name)
-			if v == "" {
-				return validation()
-			}
-			in.Agent.Name = &v
-		}
-		if in.Agent.Role != nil {
-			v := strings.TrimSpace(*in.Agent.Role)
-			if v == "" {
-				return validation()
-			}
-			in.Agent.Role = &v
-		}
-	}
-	return nil
+	return validateAgent(in.Agent)
 }
 
 // ValidateFilter canonicalizes and validates list filters.
@@ -291,44 +468,194 @@ func ContentHash(kind, title, content string) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+func applyPatch(m *Memory, in UpdateInput) {
+	if in.Type.Set {
+		m.Type = in.Type.Value
+	}
+	if in.Title.Set {
+		m.Title = in.Title.Value
+	}
+	if in.Content.Set {
+		m.Content = in.Content.Value
+	}
+	if in.Importance.Set {
+		m.Importance = in.Importance.Value
+	}
+	if in.Confidence.Set {
+		m.Confidence = in.Confidence.Value
+	}
+	if in.Attributes.Set {
+		m.Attributes = cloneJSON(in.Attributes.Value)
+	}
+}
+func equivalent(a, b Memory) bool {
+	if a.Type != b.Type || a.Title != b.Title || a.Content != b.Content || a.Importance != b.Importance || a.Confidence != b.Confidence || !bytes.Equal(nullableJSON(a.Attributes), nullableJSON(b.Attributes)) {
+		return false
+	}
+	an, bn := tagNorms(a.Tags), tagNorms(b.Tags)
+	slices.Sort(an)
+	slices.Sort(bn)
+	return slices.Equal(an, bn)
+}
+func tagNorms(tags []Tag) []string {
+	out := make([]string, len(tags))
+	for i := range tags {
+		out[i] = tags[i].NormalizedName
+	}
+	return out
+}
+func tagNames(tags []Tag) []string {
+	out := make([]string, len(tags))
+	for i := range tags {
+		out[i] = tags[i].Name
+	}
+	return out
+}
+func checkVersion(m Memory, expected int) error {
+	if m.Version != expected {
+		return &Error{Code: CodeVersionConflict, Details: map[string]any{"memory_id": m.ID, "current_version": m.Version}, Err: errors.New("version conflict")}
+	}
+	return nil
+}
+func provenance(agent *Agent) (*string, string) {
+	role := "unknown"
+	var name *string
+	if agent != nil {
+		name = agent.Name
+		if agent.Role != nil {
+			role = *agent.Role
+		}
+	}
+	return name, role
+}
+func validateAgent(agent *Agent) error {
+	if agent == nil {
+		return nil
+	}
+	if agent.Name != nil {
+		v := strings.TrimSpace(*agent.Name)
+		if v == "" {
+			return validation()
+		}
+		agent.Name = &v
+	}
+	if agent.Role != nil {
+		v := strings.TrimSpace(*agent.Role)
+		if v == "" {
+			return validation()
+		}
+		agent.Role = &v
+	}
+	return nil
+}
+func normalizeAttributes(value json.RawMessage) (json.RawMessage, error) {
+	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return nil, nil
+	}
+	var obj map[string]any
+	d := json.NewDecoder(bytes.NewReader(value))
+	d.UseNumber()
+	if d.Decode(&obj) != nil || obj == nil {
+		return nil, validation()
+	}
+	canonical, _ := json.Marshal(obj)
+	return canonical, nil
+}
 func normalizeText(v string) string {
 	return strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(v, "\r\n", "\n"), "\r", "\n"))
 }
+func validID(id string) bool                      { _, err := uuid.Parse(id); return err == nil }
 func validation() error                           { return NewError(CodeValidationError, errors.New("invalid input")) }
 func cloneJSON(v json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), v...) }
+func cloneMemory(m Memory) Memory {
+	m.Attributes = cloneJSON(m.Attributes)
+	m.Tags = append([]Tag(nil), m.Tags...)
+	return m
+}
+
+type snapshotTag struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	NormalizedName string  `json:"normalized_name"`
+	CreatedAt      *string `json:"created_at,omitempty"`
+}
+type snapshot struct {
+	ID           string          `json:"id"`
+	ProjectID    string          `json:"project_id"`
+	Version      int             `json:"version"`
+	Type         string          `json:"type"`
+	Title        string          `json:"title"`
+	Content      string          `json:"content"`
+	Importance   int             `json:"importance"`
+	Confidence   int             `json:"confidence"`
+	Attributes   json.RawMessage `json:"attributes"`
+	Tags         []snapshotTag   `json:"tags"`
+	ContentHash  string          `json:"content_hash"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	DeletedAt    *string         `json:"deleted_at"`
+	AgentName    *string         `json:"agent_name"`
+	AgentRole    string          `json:"agent_role"`
+	WorktreeRoot string          `json:"worktree_root"`
+}
 
 // SnapshotJSON serializes the complete immutable state captured by a revision.
 func SnapshotJSON(m Memory, name *string, role, path string) (json.RawMessage, error) {
-	type snapshotTag struct {
-		ID             string `json:"id"`
-		Name           string `json:"name"`
-		NormalizedName string `json:"normalized_name"`
-	}
 	tags := make([]snapshotTag, 0, len(m.Tags))
 	for _, tag := range m.Tags {
-		tags = append(tags, snapshotTag{ID: tag.ID, Name: tag.Name, NormalizedName: tag.NormalizedName})
+		created := tag.CreatedAt.UTC().Format(time.RFC3339)
+		tags = append(tags, snapshotTag{tag.ID, tag.Name, tag.NormalizedName, &created})
 	}
-	return json.Marshal(struct {
-		ID           string          `json:"id"`
-		ProjectID    string          `json:"project_id"`
-		Version      int             `json:"version"`
-		Type         string          `json:"type"`
-		Title        string          `json:"title"`
-		Content      string          `json:"content"`
-		Importance   int             `json:"importance"`
-		Confidence   int             `json:"confidence"`
-		Attributes   json.RawMessage `json:"attributes"`
-		Tags         []snapshotTag   `json:"tags"`
-		ContentHash  string          `json:"content_hash"`
-		CreatedAt    string          `json:"created_at"`
-		UpdatedAt    string          `json:"updated_at"`
-		DeletedAt    *string         `json:"deleted_at"`
-		AgentName    *string         `json:"agent_name"`
-		AgentRole    string          `json:"agent_role"`
-		WorktreeRoot string          `json:"worktree_root"`
-	}{m.ID, m.ProjectID, m.Version, m.Type, m.Title, m.Content, m.Importance, m.Confidence, nullableJSON(m.Attributes), tags, m.ContentHash, m.CreatedAt.UTC().Format(time.RFC3339), m.UpdatedAt.UTC().Format(time.RFC3339), nil, name, role, path})
+	var deleted *string
+	if m.DeletedAt != nil {
+		v := m.DeletedAt.UTC().Format(time.RFC3339)
+		deleted = &v
+	}
+	return json.Marshal(snapshot{m.ID, m.ProjectID, m.Version, m.Type, m.Title, m.Content, m.Importance, m.Confidence, nullableJSON(m.Attributes), tags, m.ContentHash, m.CreatedAt.UTC().Format(time.RFC3339), m.UpdatedAt.UTC().Format(time.RFC3339), deleted, name, role, path})
 }
 
+// FromSnapshot decodes the state portion of a stored revision.
+func FromSnapshot(data json.RawMessage) (Memory, error) {
+	var s snapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return Memory{}, err
+	}
+	created, err := time.Parse(time.RFC3339, s.CreatedAt)
+	if err != nil {
+		return Memory{}, err
+	}
+	updated, err := time.Parse(time.RFC3339, s.UpdatedAt)
+	if err != nil {
+		return Memory{}, err
+	}
+	m := Memory{ID: s.ID, ProjectID: s.ProjectID, Version: s.Version, Type: s.Type, Title: s.Title, Content: s.Content, Importance: s.Importance, Confidence: s.Confidence, Attributes: cloneJSON(s.Attributes), ContentHash: s.ContentHash, CreatedAt: created, UpdatedAt: updated}
+	if bytes.Equal(m.Attributes, []byte("null")) {
+		m.Attributes = nil
+	}
+	for _, t := range s.Tags {
+		tag := Tag{ID: t.ID, Name: t.Name, NormalizedName: t.NormalizedName}
+		if t.CreatedAt != nil {
+			tag.CreatedAt, _ = time.Parse(time.RFC3339, *t.CreatedAt)
+		}
+		m.Tags = append(m.Tags, tag)
+	}
+	if s.DeletedAt != nil {
+		v, e := time.Parse(time.RFC3339, *s.DeletedAt)
+		if e != nil {
+			return Memory{}, e
+		}
+		m.DeletedAt = &v
+	}
+	return m, nil
+}
+func buildRevision(m Memory, op string, name *string, role, path string, now time.Time) (Revision, error) {
+	data, err := SnapshotJSON(m, name, role, path)
+	if err != nil {
+		return Revision{}, NewError(CodeStoreError, err)
+	}
+	return Revision{m.ID, m.ProjectID, m.Version, op, data, name, role, path, now}, nil
+}
 func nullableJSON(value json.RawMessage) json.RawMessage {
 	if len(value) == 0 {
 		return json.RawMessage("null")

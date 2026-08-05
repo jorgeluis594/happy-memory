@@ -101,10 +101,14 @@ func (r *MemoryRepository) Create(ctx context.Context, record memory.CreateRecor
 	return m, nil
 }
 
-// Get retrieves one active project-scoped memory.
-func (r *MemoryRepository) Get(ctx context.Context, projectID, id string) (memory.Memory, error) {
+// Get retrieves one project-scoped memory, optionally including a deleted one.
+func (r *MemoryRepository) Get(ctx context.Context, projectID, id string, includeDeleted bool) (memory.Memory, error) {
 	var row memoryRow
-	err := r.db.WithContext(ctx).Where("project_id = ? AND id = ? AND deleted_at IS NULL", projectID, id).Take(&row).Error
+	query := r.db.WithContext(ctx).Where("project_id = ? AND id = ?", projectID, id)
+	if !includeDeleted {
+		query = query.Where("deleted_at IS NULL")
+	}
+	err := query.Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return memory.Memory{}, memory.NewError(memory.CodeNotFound, errors.New("memory not found"))
 	}
@@ -128,7 +132,10 @@ func (r *MemoryRepository) Get(ctx context.Context, projectID, id string) (memor
 
 // List retrieves filtered active project-scoped memories.
 func (r *MemoryRepository) List(ctx context.Context, projectID string, f memory.ListFilter) ([]memory.Memory, error) {
-	query := r.db.WithContext(ctx).Where("project_id = ? AND deleted_at IS NULL", projectID)
+	query := r.db.WithContext(ctx).Where("project_id = ?", projectID)
+	if !f.IncludeDeleted {
+		query = query.Where("deleted_at IS NULL")
+	}
 	if f.Type != "" {
 		query = query.Where("type = ?", f.Type)
 	}
@@ -169,6 +176,113 @@ func (r *MemoryRepository) List(ctx context.Context, projectID string, f memory.
 	return values, nil
 }
 
+// Mutate atomically applies a versioned state change, tags, revision, and FTS state.
+func (r *MemoryRepository) Mutate(ctx context.Context, record memory.MutationRecord) (memory.Memory, error) {
+	m := record.Memory
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		row := toMemoryRow(m)
+		result := tx.Model(&memoryRow{}).Where("project_id = ? AND id = ? AND current_version = ?", m.ProjectID, m.ID, record.ExpectedVersion).Updates(map[string]any{
+			"current_version": row.CurrentVersion, "type": row.Type, "title": row.Title, "content": row.Content,
+			"importance": row.Importance, "confidence": row.Confidence, "attributes_json": row.AttributesJSON,
+			"content_hash": row.ContentHash, "updated_at": row.UpdatedAt, "deleted_at": nullableTime(m.DeletedAt),
+		})
+		if result.Error != nil {
+			if duplicateID, ok := activeDuplicate(tx, m.ProjectID, m.ContentHash, m.ID); ok {
+				return &memory.Error{Code: memory.CodeDuplicate, Details: map[string]any{"memory_id": duplicateID}, Err: errors.New("duplicate memory")}
+			}
+			return memoryStoreError(result.Error)
+		}
+		if result.RowsAffected != 1 {
+			var current memoryRow
+			if err := tx.Where("project_id = ? AND id = ?", m.ProjectID, m.ID).Take(&current).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return memory.NewError(memory.CodeNotFound, errors.New("memory not found"))
+			} else if err != nil {
+				return memoryStoreError(err)
+			}
+			return &memory.Error{Code: memory.CodeVersionConflict, Details: map[string]any{"memory_id": m.ID, "current_version": current.CurrentVersion}, Err: errors.New("version conflict")}
+		}
+		if err := tx.Where("project_id = ? AND memory_id = ?", m.ProjectID, m.ID).Delete(&memoryTagRow{}).Error; err != nil {
+			return memoryStoreError(err)
+		}
+		for i := range m.Tags {
+			candidate := toTagRow(m.ProjectID, m.Tags[i])
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "project_id"}, {Name: "normalized_name"}}, DoNothing: true}).Create(&candidate).Error; err != nil {
+				return memoryStoreError(err)
+			}
+			var canonical tagRow
+			if err := tx.Where("project_id = ? AND normalized_name = ?", m.ProjectID, m.Tags[i].NormalizedName).Take(&canonical).Error; err != nil {
+				return memoryStoreError(err)
+			}
+			m.Tags[i] = canonical.tag()
+			if err := tx.Create(&memoryTagRow{ProjectID: m.ProjectID, MemoryID: m.ID, TagID: canonical.ID}).Error; err != nil {
+				return memoryStoreError(err)
+			}
+		}
+		rev := record.Revision
+		snapshot, err := memory.SnapshotJSON(m, rev.AgentName, rev.AgentRole, rev.WorktreeRoot)
+		if err != nil {
+			return memoryStoreError(err)
+		}
+		if err := tx.Create(&revisionRow{MemoryID: m.ID, ProjectID: m.ProjectID, Version: m.Version, Operation: rev.Operation, SnapshotJSON: string(snapshot), AgentName: rev.AgentName, AgentRole: rev.AgentRole, WorktreeRoot: rev.WorktreeRoot, CreatedAt: formatTime(rev.CreatedAt)}).Error; err != nil {
+			return memoryStoreError(err)
+		}
+		if err := tx.Exec("DELETE FROM memory_fts WHERE project_id = ? AND memory_id = ?", m.ProjectID, m.ID).Error; err != nil {
+			return memoryStoreError(err)
+		}
+		if m.DeletedAt == nil {
+			names := make([]string, len(m.Tags))
+			for i := range m.Tags {
+				names[i] = m.Tags[i].Name
+			}
+			if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content,tags) VALUES (?,?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content, strings.Join(names, " ")).Error; err != nil {
+				return memoryStoreError(err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return memory.Memory{}, err
+	}
+	return m, nil
+}
+
+// History returns immutable revisions in ascending version order.
+func (r *MemoryRepository) History(ctx context.Context, projectID, id string) ([]memory.Revision, error) {
+	if _, err := r.Get(ctx, projectID, id, true); err != nil {
+		return nil, err
+	}
+	var rows []revisionRow
+	if err := r.db.WithContext(ctx).Where("project_id = ? AND memory_id = ?", projectID, id).Order("version ASC").Find(&rows).Error; err != nil {
+		return nil, memoryStoreError(err)
+	}
+	values := make([]memory.Revision, 0, len(rows))
+	for _, row := range rows {
+		value, err := row.revision()
+		if err != nil {
+			return nil, memoryStoreError(err)
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+// Revision returns one historical snapshot scoped to its project and memory.
+func (r *MemoryRepository) Revision(ctx context.Context, projectID, id string, version int) (memory.Revision, error) {
+	var row revisionRow
+	err := r.db.WithContext(ctx).Where("project_id = ? AND memory_id = ? AND version = ?", projectID, id, version).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return memory.Revision{}, memory.NewError(memory.CodeNotFound, errors.New("memory not found"))
+	}
+	if err != nil {
+		return memory.Revision{}, memoryStoreError(err)
+	}
+	value, err := row.revision()
+	if err != nil {
+		return memory.Revision{}, memoryStoreError(err)
+	}
+	return value, nil
+}
+
 type taggedRow struct{ MemoryID, ID, Name, NormalizedName, CreatedAt string }
 
 func (r *MemoryRepository) loadTags(ctx context.Context, projectID string, ids []string) (map[string][]memory.Tag, error) {
@@ -196,7 +310,7 @@ func toMemoryRow(m memory.Memory) memoryRow {
 		value := string(m.Attributes)
 		attrs = &value
 	}
-	return memoryRow{ID: m.ID, ProjectID: m.ProjectID, CurrentVersion: m.Version, Type: m.Type, Title: m.Title, Content: m.Content, Importance: m.Importance, Confidence: m.Confidence, AttributesJSON: attrs, ContentHash: m.ContentHash, CreatedAt: formatTime(m.CreatedAt), UpdatedAt: formatTime(m.UpdatedAt)}
+	return memoryRow{ID: m.ID, ProjectID: m.ProjectID, CurrentVersion: m.Version, Type: m.Type, Title: m.Title, Content: m.Content, Importance: m.Importance, Confidence: m.Confidence, AttributesJSON: attrs, ContentHash: m.ContentHash, CreatedAt: formatTime(m.CreatedAt), UpdatedAt: formatTime(m.UpdatedAt), DeletedAt: nullableTime(m.DeletedAt)}
 }
 func toTagRow(projectID string, t memory.Tag) tagRow {
 	return tagRow{ID: t.ID, ProjectID: projectID, Name: t.Name, NormalizedName: t.NormalizedName, CreatedAt: formatTime(t.CreatedAt)}
@@ -230,4 +344,26 @@ func (row memoryRow) memory() (memory.Memory, error) {
 }
 func memoryStoreError(err error) error {
 	return memory.NewError(memory.CodeStoreError, fmt.Errorf("storage operation failed: %w", err))
+}
+
+func nullableTime(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := formatTime(*value)
+	return &formatted
+}
+
+func activeDuplicate(tx *gorm.DB, projectID, hash, excludedID string) (string, bool) {
+	var row memoryRow
+	err := tx.Where("project_id = ? AND content_hash = ? AND deleted_at IS NULL AND id <> ?", projectID, hash, excludedID).Take(&row).Error
+	return row.ID, err == nil
+}
+
+func (row revisionRow) revision() (memory.Revision, error) {
+	created, err := time.Parse(time.RFC3339, row.CreatedAt)
+	if err != nil {
+		return memory.Revision{}, err
+	}
+	return memory.Revision{MemoryID: row.MemoryID, ProjectID: row.ProjectID, Version: row.Version, Operation: row.Operation, Snapshot: json.RawMessage(row.SnapshotJSON), AgentName: row.AgentName, AgentRole: row.AgentRole, WorktreeRoot: row.WorktreeRoot, CreatedAt: created}, nil
 }

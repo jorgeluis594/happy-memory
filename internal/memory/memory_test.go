@@ -29,8 +29,13 @@ func (r *repoStub) Create(_ context.Context, record CreateRecord) (Memory, error
 	r.record = record
 	return record.Memory, nil
 }
-func (*repoStub) Get(context.Context, string, string) (Memory, error)        { return Memory{}, nil }
-func (*repoStub) List(context.Context, string, ListFilter) ([]Memory, error) { return nil, nil }
+func (*repoStub) Get(context.Context, string, string, bool) (Memory, error)   { return Memory{}, nil }
+func (*repoStub) List(context.Context, string, ListFilter) ([]Memory, error)  { return nil, nil }
+func (*repoStub) Mutate(context.Context, MutationRecord) (Memory, error)      { return Memory{}, nil }
+func (*repoStub) History(context.Context, string, string) ([]Revision, error) { return nil, nil }
+func (*repoStub) Revision(context.Context, string, string, int) (Revision, error) {
+	return Revision{}, nil
+}
 
 func TestCreateNormalizesAndBuildsInitialRevision(t *testing.T) {
 	stamp := time.Date(2026, 8, 5, 12, 0, 0, 987, time.FixedZone("x", -5*60*60))
@@ -101,5 +106,103 @@ func TestMissingRoleUsesUnknown(t *testing.T) {
 func TestErrorDetailsDefaultEmpty(t *testing.T) {
 	if len(ErrorDetails(errors.New("x"))) != 0 {
 		t.Fatal("details should be empty")
+	}
+}
+
+type lifecycleRepo struct {
+	current   Memory
+	revisions []Revision
+	mutations int
+}
+
+func (r *lifecycleRepo) Create(_ context.Context, record CreateRecord) (Memory, error) {
+	r.current = record.Memory
+	r.revisions = append(r.revisions, record.Revision)
+	return r.current, nil
+}
+func (r *lifecycleRepo) Get(_ context.Context, projectID, id string, includeDeleted bool) (Memory, error) {
+	if r.current.ProjectID != projectID || r.current.ID != id || (!includeDeleted && r.current.DeletedAt != nil) {
+		return Memory{}, NewError(CodeNotFound, errors.New("not found"))
+	}
+	return cloneMemory(r.current), nil
+}
+func (*lifecycleRepo) List(context.Context, string, ListFilter) ([]Memory, error) { return nil, nil }
+func (r *lifecycleRepo) Mutate(_ context.Context, record MutationRecord) (Memory, error) {
+	if r.current.Version != record.ExpectedVersion {
+		return Memory{}, checkVersion(r.current, record.ExpectedVersion)
+	}
+	r.current = cloneMemory(record.Memory)
+	r.revisions = append(r.revisions, record.Revision)
+	r.mutations++
+	return cloneMemory(r.current), nil
+}
+func (r *lifecycleRepo) History(context.Context, string, string) ([]Revision, error) {
+	return append([]Revision(nil), r.revisions...), nil
+}
+func (r *lifecycleRepo) Revision(_ context.Context, projectID, id string, version int) (Revision, error) {
+	for _, revision := range r.revisions {
+		if revision.ProjectID == projectID && revision.MemoryID == id && revision.Version == version {
+			return revision, nil
+		}
+	}
+	return Revision{}, NewError(CodeNotFound, errors.New("not found"))
+}
+
+func TestLifecycleNoOpConflictDeleteAndRestore(t *testing.T) {
+	id := "28fef1e4-42c5-43ca-a0c8-0c731797c06f"
+	repo := &lifecycleRepo{}
+	ids := &idsStub{values: []string{id, "tag-1", "tag-2"}}
+	clock := clockStub{time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	service := NewService(projectStub{ProjectContext{ID: "project", WorktreeRoot: "/repo"}}, repo, clock, ids)
+	created, err := service.Create(context.Background(), CreateInput{Type: "fact", Title: "title", Content: "content", Importance: 3, Confidence: 4, Tags: []string{"Go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patch UpdateInput
+	if err = json.Unmarshal([]byte(`{"title":" changed ","attributes":null,"tags":["Database"]}`), &patch); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.Update(context.Background(), id, 1, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Version != 2 || updated.Title != "changed" || len(updated.Attributes) != 0 || updated.Tags[0].NormalizedName != "database" {
+		t.Fatalf("updated=%#v", updated)
+	}
+	noOp, err := service.Update(context.Background(), id, 2, UpdateInput{Agent: &Agent{}})
+	if err != nil || noOp.Version != 2 || repo.mutations != 1 {
+		t.Fatalf("no-op=%#v mutations=%d err=%v", noOp, repo.mutations, err)
+	}
+	if _, err = service.Delete(context.Background(), id, 1); ErrorCode(err) != CodeVersionConflict {
+		t.Fatalf("conflict=%v", err)
+	}
+	deleted, err := service.Delete(context.Background(), id, 2)
+	if err != nil || deleted.Version != 3 || deleted.DeletedAt == nil {
+		t.Fatalf("deleted=%#v err=%v", deleted, err)
+	}
+	restored, err := service.Restore(context.Background(), id, created.Version, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Version != 4 || restored.DeletedAt != nil || restored.Title != "title" {
+		t.Fatalf("restored=%#v", restored)
+	}
+	if len(repo.revisions) != 4 {
+		t.Fatalf("revisions=%d", len(repo.revisions))
+	}
+}
+
+func TestUpdateInputPresenceAndNullRules(t *testing.T) {
+	var patch UpdateInput
+	if err := json.Unmarshal([]byte(`{"attributes":null,"tags":[]}`), &patch); err != nil {
+		t.Fatal(err)
+	}
+	if !patch.Attributes.Set || string(patch.Attributes.Value) != "null" || !patch.Tags.Set || patch.Tags.Value == nil {
+		t.Fatalf("patch=%#v", patch)
+	}
+	for _, body := range []string{`{"tags":null}`, `{"unknown":true}`, `[]`} {
+		if json.Unmarshal([]byte(body), &patch) == nil {
+			t.Fatalf("accepted %s", body)
+		}
 	}
 }

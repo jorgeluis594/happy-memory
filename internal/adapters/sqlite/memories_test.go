@@ -53,14 +53,14 @@ func TestMemoryRepositoryCreateGetDuplicateIsolationAndFTS(t *testing.T) {
 	if len(first.Tags) != 1 || first.Tags[0].ID != "tag-1" {
 		t.Fatal(first.Tags)
 	}
-	got, err := repo.Get(context.Background(), "p1", "m1")
+	got, err := repo.Get(context.Background(), "p1", "m1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Title != "first" || len(got.Tags) != 1 {
 		t.Fatalf("got %#v", got)
 	}
-	_, err = repo.Get(context.Background(), "p2", "m1")
+	_, err = repo.Get(context.Background(), "p2", "m1", false)
 	if memory.ErrorCode(err) != memory.CodeNotFound {
 		t.Fatalf("cross-project get = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestMemoryRepositoryReusesCanonicalTagAndFiltersWithAND(t *testing.T) {
 	if _, err := repo.Create(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	got, err := repo.Get(context.Background(), "p1", "m2")
+	got, err := repo.Get(context.Background(), "p1", "m2", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,3 +115,62 @@ func TestMemoryRepositoryReusesCanonicalTagAndFiltersWithAND(t *testing.T) {
 	}
 }
 func strings64(v string) string { return strings.Repeat(v, 64) }
+
+func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
+	repo, database := memoryTestRepository(t)
+	stamp := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	tag := memory.Tag{ID: "tag-life", Name: "Go", NormalizedName: "go", CreatedAt: stamp}
+	created, err := repo.Create(context.Background(), memoryRecord("life", "p1", strings64("d"), "first", tag))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := created
+	updated.Version = 2
+	updated.Title = "second"
+	updated.ContentHash = strings64("e")
+	updated.UpdatedAt = stamp.Add(time.Minute)
+	revision := memory.Revision{MemoryID: "life", ProjectID: "p1", Version: 2, Operation: "update", AgentRole: "unknown", WorktreeRoot: "/repo", CreatedAt: updated.UpdatedAt}
+	updated, err = repo.Mutate(context.Background(), memory.MutationRecord{Memory: updated, Revision: revision, ExpectedVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.Mutate(context.Background(), memory.MutationRecord{Memory: updated, Revision: revision, ExpectedVersion: 1})
+	if memory.ErrorCode(err) != memory.CodeVersionConflict || memory.ErrorDetails(err)["current_version"] != 2 {
+		t.Fatalf("stale error=%#v", err)
+	}
+	deleted := updated
+	deleted.Version = 3
+	deleted.UpdatedAt = stamp.Add(2 * time.Minute)
+	deleted.DeletedAt = &deleted.UpdatedAt
+	revision = memory.Revision{MemoryID: "life", ProjectID: "p1", Version: 3, Operation: "delete", AgentRole: "unknown", WorktreeRoot: "/repo", CreatedAt: deleted.UpdatedAt}
+	if _, err = repo.Mutate(context.Background(), memory.MutationRecord{Memory: deleted, Revision: revision, ExpectedVersion: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.Get(context.Background(), "p1", "life", false); memory.ErrorCode(err) != memory.CodeNotFound {
+		t.Fatalf("active get=%v", err)
+	}
+	if _, err = repo.Get(context.Background(), "p1", "life", true); err != nil {
+		t.Fatal(err)
+	}
+	var ftsCount int
+	if err = database.GORM().Raw("SELECT count(*) FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&ftsCount).Error; err != nil || ftsCount != 0 {
+		t.Fatalf("deleted fts=%d err=%v", ftsCount, err)
+	}
+	restored := created
+	restored.Version = 4
+	restored.UpdatedAt = stamp.Add(3 * time.Minute)
+	revision = memory.Revision{MemoryID: "life", ProjectID: "p1", Version: 4, Operation: "restore", AgentRole: "unknown", WorktreeRoot: "/repo", CreatedAt: restored.UpdatedAt}
+	if _, err = repo.Mutate(context.Background(), memory.MutationRecord{Memory: restored, Revision: revision, ExpectedVersion: 3}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := repo.History(context.Background(), "p1", "life")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 4 || history[0].Version != 1 || history[3].Version != 4 {
+		t.Fatalf("history=%#v", history)
+	}
+	if err = database.GORM().Raw("SELECT count(*) FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&ftsCount).Error; err != nil || ftsCount != 1 {
+		t.Fatalf("restored fts=%d err=%v", ftsCount, err)
+	}
+}

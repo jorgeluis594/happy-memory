@@ -95,6 +95,7 @@ func writeFailure(output io.Writer, err error) int {
 		project.CodeStoreError:            "storage operation failed",
 		memory.CodeNotFound:               "memory not found",
 		memory.CodeDuplicate:              "duplicate memory",
+		memory.CodeVersionConflict:        "version conflict",
 	}[code]
 	if message == "" {
 		code, message = project.CodeStoreError, "storage operation failed"

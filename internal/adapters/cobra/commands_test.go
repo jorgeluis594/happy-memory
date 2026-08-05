@@ -29,12 +29,22 @@ func (s *memoryStub) Create(_ context.Context, input memory.CreateInput) (memory
 	s.input = input
 	return s.value, s.err
 }
-func (s *memoryStub) Get(context.Context, string) (memory.Memory, error) { return s.value, s.err }
+func (s *memoryStub) Update(_ context.Context, _ string, _ int, _ memory.UpdateInput) (memory.Memory, error) {
+	return s.value, s.err
+}
+func (s *memoryStub) Delete(context.Context, string, int) (memory.Memory, error) {
+	return s.value, s.err
+}
+func (s *memoryStub) Restore(context.Context, string, int, int) (memory.Memory, error) {
+	return s.value, s.err
+}
+func (s *memoryStub) Get(context.Context, string, bool) (memory.Memory, error) { return s.value, s.err }
 func (s *memoryStub) List(_ context.Context, filter memory.ListFilter) ([]memory.Memory, error) {
 	s.filter = filter
 	return []memory.Memory{s.value}, s.err
 }
-func (stub stubService) ShowCurrent(context.Context) (project.Project, error) { return stub.value, nil }
+func (s *memoryStub) History(context.Context, string) ([]memory.Revision, error) { return nil, s.err }
+func (stub stubService) ShowCurrent(context.Context) (project.Project, error)    { return stub.value, nil }
 func (stub stubService) List(context.Context) ([]project.Project, error) {
 	return []project.Project{stub.value}, nil
 }
