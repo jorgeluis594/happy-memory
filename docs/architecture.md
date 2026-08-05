@@ -106,7 +106,40 @@ happy-memory/
 └── Makefile
 ```
 
-La estructura es un punto de partida, no una obligación de crear todos los archivos vacíos. Un archivo se separa cuando su responsabilidad ya existe y la separación mejora su comprensión o prueba.
+La estructura es un punto de partida, no una obligación de crear todos los archivos vacíos.
+
+### Paquetes y archivos
+
+En Go, la carpeta define el paquete y constituye el límite arquitectónico. Los archivos dentro de esa carpeta son una herramienta para organizar las responsabilidades internas del paquete; no representan capas obligatorias ni unidades desplegables distintas.
+
+Por ejemplo, `internal/memory` es el módulo de dominio y todos sus archivos declaran `package memory`. `memory.go` contiene la entidad principal porque ese nombre expresa mejor el concepto que un nombre genérico como `entity.go`. `service.go`, `repository.go` y `errors.go` solo deben existir cuando esas responsabilidades tengan implementación concreta.
+
+Un módulo pequeño puede comenzar así:
+
+```text
+internal/memory/
+├── memory.go
+├── service.go
+└── repository.go
+```
+
+Si los casos de uso crecen, se pueden separar en archivos sin crear nuevos subpaquetes:
+
+```text
+internal/memory/
+├── memory.go
+├── create.go
+├── get.go
+├── list.go
+├── search.go
+├── delete.go
+├── repository.go
+└── errors.go
+```
+
+Todos estos archivos continúan formando un único paquete `memory`. Solo se introducen subpaquetes como `memory/usecases` cuando el tamaño y la complejidad justifican un nuevo límite interno. No se replica automáticamente una jerarquía `domain/`, `usecases/` e `infrastructure/` dentro de cada módulo.
+
+La regla práctica es: **módulos por capacidad del negocio, archivos por responsabilidad y subpaquetes solo ante complejidad real**. Un archivo se separa cuando su responsabilidad ya existe y la separación mejora su comprensión o prueba.
 
 ### `cmd/`
 
