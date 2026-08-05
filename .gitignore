@@ -6,3 +6,6 @@
 # Editor and environment files
 .DS_Store
 .env
+
+# Local brainstorming artifacts
+/.superpowers/
