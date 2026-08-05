@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement code incrementally"
+  short_description: "Implement code in small, validated groups"
+  default_prompt: "Use $implement-code to implement this change in validated groups of up to five production code files."
