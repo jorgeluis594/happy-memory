@@ -3,11 +3,17 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
 	"io/fs"
 
 	"github.com/pressly/goose/v3"
 )
+
+// EmbeddedMigrations contains all versioned schema migrations.
+//
+//go:embed migrations/*.sql
+var EmbeddedMigrations embed.FS
 
 // Migrate applies all pending SQLite migrations from migrations. The caller
 // retains ownership of db; this helper does not close it.
