@@ -36,6 +36,8 @@ func (*repoStub) History(context.Context, string, string) ([]Revision, error) { 
 func (*repoStub) Revision(context.Context, string, string, int) (Revision, error) {
 	return Revision{}, nil
 }
+func (*repoStub) ListTags(context.Context, string) ([]Tag, error)           { return nil, nil }
+func (*repoStub) SearchTags(context.Context, string, string) ([]Tag, error) { return nil, nil }
 
 func TestCreateNormalizesAndBuildsInitialRevision(t *testing.T) {
 	stamp := time.Date(2026, 8, 5, 12, 0, 0, 987, time.FixedZone("x", -5*60*60))
@@ -43,7 +45,8 @@ func TestCreateNormalizesAndBuildsInitialRevision(t *testing.T) {
 	ids := &idsStub{values: []string{"memory-id", "tag-id"}}
 	service := NewService(projectStub{ProjectContext{ID: "project-id", WorktreeRoot: "/repo/worktree"}}, repo, clockStub{stamp}, ids)
 	name, role := " Agent One ", " database-specialist "
-	value, err := service.Create(context.Background(), CreateInput{Type: "decision", Title: "  title\r\n", Content: "body\rline  ", Importance: 5, Confidence: 4, Attributes: json.RawMessage(`{"z":1,"a":true}`), Tags: []string{" DataBase "}, Agent: &Agent{Name: &name, Role: &role}})
+	description := " Data storage "
+	value, err := service.Create(context.Background(), CreateInput{Type: "decision", Title: "  title\r\n", Content: "body\rline  ", Importance: 5, Confidence: 4, Attributes: json.RawMessage(`{"z":1,"a":true}`), Tags: []TagInput{{Name: " DataBase ", Description: &description}}, Agent: &Agent{Name: &name, Role: &role}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +55,9 @@ func TestCreateNormalizesAndBuildsInitialRevision(t *testing.T) {
 	}
 	if value.ContentHash != ContentHash("decision", "title", "body\nline") {
 		t.Fatal("unexpected hash")
+	}
+	if value.Tags[0].NormalizedName != "database" || value.Tags[0].Description == nil || *value.Tags[0].Description != "Data storage" {
+		t.Fatalf("tag = %#v", value.Tags[0])
 	}
 	if !value.CreatedAt.Equal(time.Date(2026, 8, 5, 17, 0, 0, 0, time.UTC)) {
 		t.Fatalf("timestamp = %v", value.CreatedAt)
@@ -69,13 +75,13 @@ func TestCreateNormalizesAndBuildsInitialRevision(t *testing.T) {
 }
 
 func TestCreateValidation(t *testing.T) {
-	base := CreateInput{Type: "fact", Title: "title", Content: "content", Importance: 1, Confidence: 1, Tags: []string{}}
+	base := CreateInput{Type: "fact", Title: "title", Content: "content", Importance: 1, Confidence: 1, Tags: []TagInput{}}
 	cases := []CreateInput{base, base, base, base, base}
 	cases[0].Type = "other"
 	cases[1].Title = " \r\n "
 	cases[2].Importance = 6
 	cases[3].Attributes = json.RawMessage(`[]`)
-	cases[4].Tags = []string{"Tag", " tag "}
+	cases[4].Tags = []TagInput{{Name: "Tag"}, {Name: " tag "}}
 	for i, value := range cases {
 		err := NormalizeAndValidate(&value)
 		if ErrorCode(err) != CodeValidationError {
@@ -127,6 +133,8 @@ func (r *lifecycleRepo) Get(_ context.Context, projectID, id string, includeDele
 	return cloneMemory(r.current), nil
 }
 func (*lifecycleRepo) List(context.Context, string, ListFilter) ([]Memory, error) { return nil, nil }
+func (*lifecycleRepo) ListTags(context.Context, string) ([]Tag, error)            { return nil, nil }
+func (*lifecycleRepo) SearchTags(context.Context, string, string) ([]Tag, error)  { return nil, nil }
 func (r *lifecycleRepo) Mutate(_ context.Context, record MutationRecord) (Memory, error) {
 	if r.current.Version != record.ExpectedVersion {
 		return Memory{}, checkVersion(r.current, record.ExpectedVersion)
@@ -154,7 +162,7 @@ func TestLifecycleNoOpConflictDeleteAndRestore(t *testing.T) {
 	ids := &idsStub{values: []string{id, "tag-1", "tag-2"}}
 	clock := clockStub{time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
 	service := NewService(projectStub{ProjectContext{ID: "project", WorktreeRoot: "/repo"}}, repo, clock, ids)
-	created, err := service.Create(context.Background(), CreateInput{Type: "fact", Title: "title", Content: "content", Importance: 3, Confidence: 4, Tags: []string{"Go"}})
+	created, err := service.Create(context.Background(), CreateInput{Type: "fact", Title: "title", Content: "content", Importance: 3, Confidence: 4, Tags: []TagInput{{Name: "Go"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +197,32 @@ func TestLifecycleNoOpConflictDeleteAndRestore(t *testing.T) {
 	}
 	if len(repo.revisions) != 4 {
 		t.Fatalf("revisions=%d", len(repo.revisions))
+	}
+}
+
+func TestTagInputFormatsNormalizationAndSearchValidation(t *testing.T) {
+	var input CreateInput
+	if err := json.Unmarshal([]byte(`{"type":"fact","title":"t","content":"c","importance":1,"confidence":1,"tags":[" Git  Operations ",{"name":"Data--Layer","description":" storage "}]}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeAndValidate(&input); err != nil {
+		t.Fatal(err)
+	}
+	if NormalizeTag(input.Tags[0].Name) != "git-operations" || NormalizeTag(input.Tags[1].Name) != "data-layer" || input.Tags[1].Description == nil || *input.Tags[1].Description != "storage" {
+		t.Fatalf("tags = %#v", input.Tags)
+	}
+	for _, body := range []string{
+		`{"type":"fact","title":"t","content":"c","importance":1,"confidence":1,"tags":[{"name":"x","unknown":true}]}`,
+		`{"type":"fact","title":"t","content":"c","importance":1,"confidence":1,"tags":["git operations","git--operations"]}`,
+	} {
+		var invalid CreateInput
+		if err := json.Unmarshal([]byte(body), &invalid); err == nil && NormalizeAndValidate(&invalid) == nil {
+			t.Fatalf("accepted %s", body)
+		}
+	}
+	service := NewService(projectStub{}, &repoStub{}, clockStub{}, &idsStub{})
+	if ErrorCode(func() error { _, err := service.TagsSearch(context.Background(), "  "); return err }()) != CodeValidationError {
+		t.Fatal("empty tag query accepted")
 	}
 }
 

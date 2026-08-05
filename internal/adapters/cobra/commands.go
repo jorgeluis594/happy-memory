@@ -29,6 +29,8 @@ type memoryService interface {
 	Get(context.Context, string, bool) (memory.Memory, error)
 	List(context.Context, memory.ListFilter) ([]memory.Memory, error)
 	History(context.Context, string) ([]memory.Revision, error)
+	TagsList(context.Context) ([]memory.Tag, error)
+	TagsSearch(context.Context, string) ([]memory.Tag, error)
 }
 
 // Execute parses args and returns a buffered successful response.
@@ -214,14 +216,44 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 		}
 		return writeJSON(output, historySuccess{OK: true, Data: historyData{Revisions: items}})
 	}}
-	root.AddCommand(createCommand, updateCommand, deleteCommand, restoreCommand, getCommand, listCommand, historyCommand)
+	tagsCommand := &spf13cobra.Command{Use: "tags", Args: invalidArgs, RunE: invalidCommand}
+	tagsCommand.AddCommand(
+		&spf13cobra.Command{Use: "list", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
+			values, err := service.TagsList(command.Context())
+			if err != nil {
+				return err
+			}
+			return writeJSON(output, tagListSuccess{OK: true, Data: tagListData{Tags: toVocabularyJSON(values)}})
+		}},
+		&spf13cobra.Command{Use: "search <query>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+			values, err := service.TagsSearch(command.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return writeJSON(output, tagListSuccess{OK: true, Data: tagListData{Tags: toVocabularyJSON(values)}})
+		}},
+	)
+	root.AddCommand(createCommand, updateCommand, deleteCommand, restoreCommand, getCommand, listCommand, historyCommand, tagsCommand)
 }
 
 type tagJSON struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	NormalizedName string `json:"normalized_name"`
-	CreatedAt      string `json:"created_at"`
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	NormalizedName string  `json:"normalized_name"`
+	Description    *string `json:"description"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+}
+type vocabularyTagJSON struct {
+	tagJSON
+	ActiveMemoryCount int `json:"active_memory_count"`
+}
+type tagListData struct {
+	Tags []vocabularyTagJSON `json:"tags"`
+}
+type tagListSuccess struct {
+	OK   bool        `json:"ok"`
+	Data tagListData `json:"data"`
 }
 type memoryJSON struct {
 	ID          string          `json:"id"`
@@ -269,7 +301,7 @@ type historySuccess struct {
 func toMemoryJSON(value memory.Memory) memoryJSON {
 	tags := make([]tagJSON, 0, len(value.Tags))
 	for _, tag := range value.Tags {
-		tags = append(tags, tagJSON{ID: tag.ID, Name: tag.Name, NormalizedName: tag.NormalizedName, CreatedAt: tag.CreatedAt.UTC().Format(time.RFC3339)})
+		tags = append(tags, toTagJSON(tag))
 	}
 	attributes := value.Attributes
 	if len(attributes) == 0 {
@@ -281,6 +313,16 @@ func toMemoryJSON(value memory.Memory) memoryJSON {
 		deleted = &formatted
 	}
 	return memoryJSON{ID: value.ID, Version: value.Version, Type: value.Type, Title: value.Title, Content: value.Content, Importance: value.Importance, Confidence: value.Confidence, Attributes: attributes, Tags: tags, ContentHash: value.ContentHash, CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: value.UpdatedAt.UTC().Format(time.RFC3339), DeletedAt: deleted}
+}
+func toTagJSON(tag memory.Tag) tagJSON {
+	return tagJSON{ID: tag.ID, Name: tag.Name, NormalizedName: tag.NormalizedName, Description: tag.Description, CreatedAt: tag.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: tag.UpdatedAt.UTC().Format(time.RFC3339)}
+}
+func toVocabularyJSON(values []memory.Tag) []vocabularyTagJSON {
+	tags := make([]vocabularyTagJSON, 0, len(values))
+	for _, tag := range values {
+		tags = append(tags, vocabularyTagJSON{tagJSON: toTagJSON(tag), ActiveMemoryCount: tag.ActiveMemoryCount})
+	}
+	return tags
 }
 func toRevisionJSON(value memory.Revision) (revisionJSON, error) {
 	snapshot, err := memory.FromSnapshot(value.Snapshot)

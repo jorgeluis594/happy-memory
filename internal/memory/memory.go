@@ -63,6 +63,33 @@ type Agent struct {
 	Role *string `json:"role,omitempty"`
 }
 
+// TagInput is one tag supplied by a consumer. It accepts a string or an object.
+type TagInput struct {
+	Name        string
+	Description *string
+}
+
+// UnmarshalJSON accepts both the legacy string and enriched object forms.
+func (in *TagInput) UnmarshalJSON(data []byte) error {
+	var name string
+	if json.Unmarshal(data, &name) == nil {
+		in.Name = name
+		in.Description = nil
+		return nil
+	}
+	var object struct {
+		Name        string  `json:"name"`
+		Description *string `json:"description"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&object) != nil || object.Name == "" {
+		return validation()
+	}
+	in.Name, in.Description = object.Name, object.Description
+	return nil
+}
+
 // CreateInput is the accepted memory creation payload.
 type CreateInput struct {
 	Type       string          `json:"type"`
@@ -71,7 +98,7 @@ type CreateInput struct {
 	Importance int             `json:"importance"`
 	Confidence int             `json:"confidence"`
 	Attributes json.RawMessage `json:"attributes,omitempty"`
-	Tags       []string        `json:"tags"`
+	Tags       []TagInput      `json:"tags"`
 	Agent      *Agent          `json:"agent,omitempty"`
 }
 
@@ -89,7 +116,7 @@ type UpdateInput struct {
 	Importance Field[int]
 	Confidence Field[int]
 	Attributes Field[json.RawMessage]
-	Tags       Field[[]string]
+	Tags       Field[[]TagInput]
 	Agent      *Agent
 }
 
@@ -147,10 +174,13 @@ func (in *UpdateInput) UnmarshalJSON(data []byte) error {
 
 // Tag is a project-scoped canonical tag.
 type Tag struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	NormalizedName string    `json:"normalized_name"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	NormalizedName    string    `json:"normalized_name"`
+	Description       *string   `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ActiveMemoryCount int       `json:"active_memory_count,omitempty"`
 }
 
 // Memory is the current persisted state of one memory.
@@ -206,6 +236,8 @@ type Repository interface {
 	Mutate(context.Context, MutationRecord) (Memory, error)
 	History(context.Context, string, string) ([]Revision, error)
 	Revision(context.Context, string, string, int) (Revision, error)
+	ListTags(context.Context, string) ([]Tag, error)
+	SearchTags(context.Context, string, string) ([]Tag, error)
 }
 
 // ProjectContext identifies the current project and worktree.
@@ -246,8 +278,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Memory, error) {
 	}
 	now := s.now()
 	m := Memory{ID: s.ids.New(), ProjectID: p.ID, Version: 1, Type: in.Type, Title: in.Title, Content: in.Content, Importance: in.Importance, Confidence: in.Confidence, Attributes: cloneJSON(in.Attributes), ContentHash: ContentHash(in.Type, in.Title, in.Content), CreatedAt: now, UpdatedAt: now}
-	for _, name := range in.Tags {
-		m.Tags = append(m.Tags, Tag{ID: s.ids.New(), Name: name, NormalizedName: NormalizeTag(name), CreatedAt: now})
+	for _, input := range in.Tags {
+		m.Tags = append(m.Tags, Tag{ID: s.ids.New(), Name: input.Name, NormalizedName: NormalizeTag(input.Name), Description: cloneString(input.Description), CreatedAt: now, UpdatedAt: now})
 	}
 	name, role := provenance(in.Agent)
 	revision, err := buildRevision(m, "create", name, role, p.WorktreeRoot, now)
@@ -298,9 +330,9 @@ func (s *Service) Update(ctx context.Context, id string, expected int, in Update
 	}
 	next := cloneMemory(current)
 	applyPatch(&next, in)
-	create := CreateInput{Type: next.Type, Title: next.Title, Content: next.Content, Importance: next.Importance, Confidence: next.Confidence, Attributes: next.Attributes, Tags: tagNames(next.Tags), Agent: in.Agent}
+	create := CreateInput{Type: next.Type, Title: next.Title, Content: next.Content, Importance: next.Importance, Confidence: next.Confidence, Attributes: next.Attributes, Tags: tagInputs(next.Tags), Agent: in.Agent}
 	if in.Tags.Set {
-		create.Tags = append([]string(nil), in.Tags.Value...)
+		create.Tags = append([]TagInput(nil), in.Tags.Value...)
 	}
 	if err = NormalizeAndValidate(&create); err != nil {
 		return Memory{}, err
@@ -309,7 +341,8 @@ func (s *Service) Update(ctx context.Context, id string, expected int, in Update
 	if in.Tags.Set {
 		next.Tags = make([]Tag, 0, len(create.Tags))
 		for _, tag := range create.Tags {
-			next.Tags = append(next.Tags, Tag{ID: s.ids.New(), Name: tag, NormalizedName: NormalizeTag(tag), CreatedAt: s.now()})
+			now := s.now()
+			next.Tags = append(next.Tags, Tag{ID: s.ids.New(), Name: tag.Name, NormalizedName: NormalizeTag(tag.Name), Description: cloneString(tag.Description), CreatedAt: now, UpdatedAt: now})
 		}
 	}
 	if equivalent(current, next) {
@@ -402,6 +435,28 @@ func (s *Service) History(ctx context.Context, id string) ([]Revision, error) {
 	}
 	return s.repo.History(ctx, p.ID, id)
 }
+
+// TagsList returns the complete project-scoped tag vocabulary.
+func (s *Service) TagsList(ctx context.Context) ([]Tag, error) {
+	p, err := s.projects.Current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.ListTags(ctx, p.ID)
+}
+
+// TagsSearch returns project tags matching name or description.
+func (s *Service) TagsSearch(ctx context.Context, query string) ([]Tag, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, validation()
+	}
+	p, err := s.projects.Current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.SearchTags(ctx, p.ID, query)
+}
 func (s *Service) current(ctx context.Context, id string) (ProjectContext, Memory, error) {
 	p, err := s.projects.Current(ctx)
 	if err != nil {
@@ -426,14 +481,22 @@ func NormalizeAndValidate(in *CreateInput) error {
 	}
 	in.Attributes = attrs
 	seen := map[string]bool{}
-	for i, name := range in.Tags {
-		name = strings.TrimSpace(name)
-		norm := NormalizeTag(name)
-		if name == "" || seen[norm] {
+	for i, tag := range in.Tags {
+		tag.Name = strings.TrimSpace(tag.Name)
+		norm := NormalizeTag(tag.Name)
+		if norm == "" || seen[norm] {
 			return validation()
 		}
+		if tag.Description != nil {
+			description := strings.TrimSpace(*tag.Description)
+			if description == "" {
+				tag.Description = nil
+			} else {
+				tag.Description = &description
+			}
+		}
 		seen[norm] = true
-		in.Tags[i] = name
+		in.Tags[i] = tag
 	}
 	return validateAgent(in.Agent)
 }
@@ -460,7 +523,13 @@ func ValidateFilter(f *ListFilter) error {
 }
 
 // NormalizeTag produces a project tag lookup key.
-func NormalizeTag(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+func NormalizeTag(v string) string {
+	value := strings.ToLower(strings.Join(strings.Fields(v), "-"))
+	for strings.Contains(value, "--") {
+		value = strings.ReplaceAll(value, "--", "-")
+	}
+	return value
+}
 
 // ContentHash returns the deterministic identity hash for normalized content.
 func ContentHash(kind, title, content string) string {
@@ -505,10 +574,10 @@ func tagNorms(tags []Tag) []string {
 	}
 	return out
 }
-func tagNames(tags []Tag) []string {
-	out := make([]string, len(tags))
+func tagInputs(tags []Tag) []TagInput {
+	out := make([]TagInput, len(tags))
 	for i := range tags {
-		out[i] = tags[i].Name
+		out[i] = TagInput{Name: tags[i].Name, Description: cloneString(tags[i].Description)}
 	}
 	return out
 }
@@ -574,11 +643,21 @@ func cloneMemory(m Memory) Memory {
 	return m
 }
 
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 type snapshotTag struct {
 	ID             string  `json:"id"`
 	Name           string  `json:"name"`
 	NormalizedName string  `json:"normalized_name"`
+	Description    *string `json:"description"`
 	CreatedAt      *string `json:"created_at,omitempty"`
+	UpdatedAt      *string `json:"updated_at,omitempty"`
 }
 type snapshot struct {
 	ID           string          `json:"id"`
@@ -605,7 +684,8 @@ func SnapshotJSON(m Memory, name *string, role, path string) (json.RawMessage, e
 	tags := make([]snapshotTag, 0, len(m.Tags))
 	for _, tag := range m.Tags {
 		created := tag.CreatedAt.UTC().Format(time.RFC3339)
-		tags = append(tags, snapshotTag{tag.ID, tag.Name, tag.NormalizedName, &created})
+		updated := tag.UpdatedAt.UTC().Format(time.RFC3339)
+		tags = append(tags, snapshotTag{tag.ID, tag.Name, tag.NormalizedName, tag.Description, &created, &updated})
 	}
 	var deleted *string
 	if m.DeletedAt != nil {
@@ -634,9 +714,14 @@ func FromSnapshot(data json.RawMessage) (Memory, error) {
 		m.Attributes = nil
 	}
 	for _, t := range s.Tags {
-		tag := Tag{ID: t.ID, Name: t.Name, NormalizedName: t.NormalizedName}
+		tag := Tag{ID: t.ID, Name: t.Name, NormalizedName: t.NormalizedName, Description: cloneString(t.Description)}
 		if t.CreatedAt != nil {
 			tag.CreatedAt, _ = time.Parse(time.RFC3339, *t.CreatedAt)
+		}
+		if t.UpdatedAt != nil {
+			tag.UpdatedAt, _ = time.Parse(time.RFC3339, *t.UpdatedAt)
+		} else {
+			tag.UpdatedAt = tag.CreatedAt
 		}
 		m.Tags = append(m.Tags, tag)
 	}

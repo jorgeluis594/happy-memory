@@ -26,11 +26,15 @@ type memoryRow struct {
 
 func (memoryRow) TableName() string { return "memories" }
 
-type tagRow struct{ ID, ProjectID, Name, NormalizedName, CreatedAt string }
+type tagRow struct {
+	ID, ProjectID, Name, NormalizedName string
+	Description                         *string
+	CreatedAt, UpdatedAt                string
+}
 
 func (tagRow) TableName() string { return "tags" }
 
-type memoryTagRow struct{ ProjectID, MemoryID, TagID string }
+type memoryTagRow struct{ ProjectID, MemoryID, TagID, CreatedAt string }
 
 func (memoryTagRow) TableName() string { return "memory_tags" }
 
@@ -73,7 +77,7 @@ func (r *MemoryRepository) Create(ctx context.Context, record memory.CreateRecor
 				return memoryStoreError(err)
 			}
 			m.Tags[i] = canonical.tag()
-			if err := tx.Create(&memoryTagRow{ProjectID: m.ProjectID, MemoryID: m.ID, TagID: canonical.ID}).Error; err != nil {
+			if err := tx.Create(&memoryTagRow{ProjectID: m.ProjectID, MemoryID: m.ID, TagID: canonical.ID, CreatedAt: formatTime(m.CreatedAt)}).Error; err != nil {
 				return memoryStoreError(err)
 			}
 		}
@@ -214,7 +218,7 @@ func (r *MemoryRepository) Mutate(ctx context.Context, record memory.MutationRec
 				return memoryStoreError(err)
 			}
 			m.Tags[i] = canonical.tag()
-			if err := tx.Create(&memoryTagRow{ProjectID: m.ProjectID, MemoryID: m.ID, TagID: canonical.ID}).Error; err != nil {
+			if err := tx.Create(&memoryTagRow{ProjectID: m.ProjectID, MemoryID: m.ID, TagID: canonical.ID, CreatedAt: formatTime(m.UpdatedAt)}).Error; err != nil {
 				return memoryStoreError(err)
 			}
 		}
@@ -283,7 +287,61 @@ func (r *MemoryRepository) Revision(ctx context.Context, projectID, id string, v
 	return value, nil
 }
 
-type taggedRow struct{ MemoryID, ID, Name, NormalizedName, CreatedAt string }
+// ListTags returns the complete vocabulary for one project.
+func (r *MemoryRepository) ListTags(ctx context.Context, projectID string) ([]memory.Tag, error) {
+	return r.queryTags(ctx, projectID, "")
+}
+
+// SearchTags returns project tags matching a literal case-insensitive query.
+func (r *MemoryRepository) SearchTags(ctx context.Context, projectID, query string) ([]memory.Tag, error) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+	return r.queryTags(ctx, projectID, "%"+escaped+"%")
+}
+
+type vocabularyRow struct {
+	ID, Name, NormalizedName, CreatedAt, UpdatedAt string
+	Description                                    *string
+	ActiveMemoryCount                              int
+}
+
+func (r *MemoryRepository) queryTags(ctx context.Context, projectID, pattern string) ([]memory.Tag, error) {
+	query := r.db.WithContext(ctx).Table("tags AS t").
+		Select("t.id,t.name,t.normalized_name,t.description,t.created_at,t.updated_at,count(m.id) AS active_memory_count").
+		Joins("LEFT JOIN memory_tags AS mt ON mt.project_id = t.project_id AND mt.tag_id = t.id").
+		Joins("LEFT JOIN memories AS m ON m.project_id = mt.project_id AND m.id = mt.memory_id AND m.deleted_at IS NULL").
+		Where("t.project_id = ?", projectID)
+	if pattern != "" {
+		query = query.Where(`lower(t.name) LIKE lower(?) ESCAPE '\' OR lower(coalesce(t.description, '')) LIKE lower(?) ESCAPE '\'`, pattern, pattern)
+	}
+	query = query.Group("t.id,t.name,t.normalized_name,t.description,t.created_at,t.updated_at")
+	if pattern == "" {
+		query = query.Order("t.normalized_name ASC")
+	} else {
+		query = query.Order("active_memory_count DESC").Order("t.normalized_name ASC")
+	}
+	var rows []vocabularyRow
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, memoryStoreError(err)
+	}
+	values := make([]memory.Tag, 0, len(rows))
+	for _, row := range rows {
+		created, err := time.Parse(time.RFC3339, row.CreatedAt)
+		if err != nil {
+			return nil, memoryStoreError(err)
+		}
+		updated, err := time.Parse(time.RFC3339, row.UpdatedAt)
+		if err != nil {
+			return nil, memoryStoreError(err)
+		}
+		values = append(values, memory.Tag{ID: row.ID, Name: row.Name, NormalizedName: row.NormalizedName, Description: row.Description, CreatedAt: created, UpdatedAt: updated, ActiveMemoryCount: row.ActiveMemoryCount})
+	}
+	return values, nil
+}
+
+type taggedRow struct {
+	MemoryID, ID, Name, NormalizedName, CreatedAt, UpdatedAt string
+	Description                                              *string
+}
 
 func (r *MemoryRepository) loadTags(ctx context.Context, projectID string, ids []string) (map[string][]memory.Tag, error) {
 	out := map[string][]memory.Tag{}
@@ -291,7 +349,7 @@ func (r *MemoryRepository) loadTags(ctx context.Context, projectID string, ids [
 		return out, nil
 	}
 	var rows []taggedRow
-	err := r.db.WithContext(ctx).Table("tags AS t").Select("mt.memory_id,t.id,t.name,t.normalized_name,t.created_at").Joins("JOIN memory_tags AS mt ON mt.project_id = t.project_id AND mt.tag_id = t.id").Where("mt.project_id = ? AND mt.memory_id IN ?", projectID, ids).Order("t.normalized_name ASC").Order("t.id ASC").Scan(&rows).Error
+	err := r.db.WithContext(ctx).Table("tags AS t").Select("mt.memory_id,t.id,t.name,t.normalized_name,t.description,t.created_at,t.updated_at").Joins("JOIN memory_tags AS mt ON mt.project_id = t.project_id AND mt.tag_id = t.id").Where("mt.project_id = ? AND mt.memory_id IN ?", projectID, ids).Order("t.normalized_name ASC").Order("t.id ASC").Scan(&rows).Error
 	if err != nil {
 		return nil, memoryStoreError(err)
 	}
@@ -300,7 +358,11 @@ func (r *MemoryRepository) loadTags(ctx context.Context, projectID string, ids [
 		if parseErr != nil {
 			return nil, memoryStoreError(parseErr)
 		}
-		out[row.MemoryID] = append(out[row.MemoryID], memory.Tag{ID: row.ID, Name: row.Name, NormalizedName: row.NormalizedName, CreatedAt: stamp})
+		updated, parseErr := time.Parse(time.RFC3339, row.UpdatedAt)
+		if parseErr != nil {
+			return nil, memoryStoreError(parseErr)
+		}
+		out[row.MemoryID] = append(out[row.MemoryID], memory.Tag{ID: row.ID, Name: row.Name, NormalizedName: row.NormalizedName, Description: row.Description, CreatedAt: stamp, UpdatedAt: updated})
 	}
 	return out, nil
 }
@@ -313,11 +375,12 @@ func toMemoryRow(m memory.Memory) memoryRow {
 	return memoryRow{ID: m.ID, ProjectID: m.ProjectID, CurrentVersion: m.Version, Type: m.Type, Title: m.Title, Content: m.Content, Importance: m.Importance, Confidence: m.Confidence, AttributesJSON: attrs, ContentHash: m.ContentHash, CreatedAt: formatTime(m.CreatedAt), UpdatedAt: formatTime(m.UpdatedAt), DeletedAt: nullableTime(m.DeletedAt)}
 }
 func toTagRow(projectID string, t memory.Tag) tagRow {
-	return tagRow{ID: t.ID, ProjectID: projectID, Name: t.Name, NormalizedName: t.NormalizedName, CreatedAt: formatTime(t.CreatedAt)}
+	return tagRow{ID: t.ID, ProjectID: projectID, Name: t.Name, NormalizedName: t.NormalizedName, Description: t.Description, CreatedAt: formatTime(t.CreatedAt), UpdatedAt: formatTime(t.UpdatedAt)}
 }
 func (row tagRow) tag() memory.Tag {
-	stamp, _ := time.Parse(time.RFC3339, row.CreatedAt)
-	return memory.Tag{ID: row.ID, Name: row.Name, NormalizedName: row.NormalizedName, CreatedAt: stamp}
+	created, _ := time.Parse(time.RFC3339, row.CreatedAt)
+	updated, _ := time.Parse(time.RFC3339, row.UpdatedAt)
+	return memory.Tag{ID: row.ID, Name: row.Name, NormalizedName: row.NormalizedName, Description: row.Description, CreatedAt: created, UpdatedAt: updated}
 }
 func (row memoryRow) memory() (memory.Memory, error) {
 	created, err := time.Parse(time.RFC3339, row.CreatedAt)

@@ -19,10 +19,12 @@ func (stub stubService) Initialize(context.Context, *string) (project.Project, e
 }
 
 type memoryStub struct {
-	value  memory.Memory
-	input  memory.CreateInput
-	filter memory.ListFilter
-	err    error
+	value     memory.Memory
+	input     memory.CreateInput
+	filter    memory.ListFilter
+	tagValues []memory.Tag
+	tagQuery  string
+	err       error
 }
 
 func (s *memoryStub) Create(_ context.Context, input memory.CreateInput) (memory.Memory, error) {
@@ -44,9 +46,45 @@ func (s *memoryStub) List(_ context.Context, filter memory.ListFilter) ([]memory
 	return []memory.Memory{s.value}, s.err
 }
 func (s *memoryStub) History(context.Context, string) ([]memory.Revision, error) { return nil, s.err }
-func (stub stubService) ShowCurrent(context.Context) (project.Project, error)    { return stub.value, nil }
+func (s *memoryStub) TagsList(context.Context) ([]memory.Tag, error) {
+	return s.tagValues, s.err
+}
+func (s *memoryStub) TagsSearch(_ context.Context, query string) ([]memory.Tag, error) {
+	s.tagQuery = query
+	return s.tagValues, s.err
+}
+func (stub stubService) ShowCurrent(context.Context) (project.Project, error) { return stub.value, nil }
 func (stub stubService) List(context.Context) ([]project.Project, error) {
 	return []project.Project{stub.value}, nil
+}
+
+func TestMemoryCreateAcceptsBothTagInputFormats(t *testing.T) {
+	service := &memoryStub{value: memory.Memory{Tags: []memory.Tag{}}}
+	input := bytes.NewBufferString(`{"type":"fact","title":"title","content":"content","importance":4,"confidence":3,"tags":["git",{"name":"database","description":"Storage"}]}`)
+	if _, err := ExecuteWithMemory(context.Background(), []string{"create", "--input", "-"}, input, stubService{}, service); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.input.Tags) != 2 || service.input.Tags[0].Name != "git" || service.input.Tags[1].Description == nil || *service.input.Tags[1].Description != "Storage" {
+		t.Fatalf("input tags=%#v", service.input.Tags)
+	}
+}
+
+func TestTagVocabularyCommandsUseExactJSON(t *testing.T) {
+	stamp := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	description := "Git operations"
+	service := &memoryStub{tagValues: []memory.Tag{{ID: "tag-id", Name: "Git", NormalizedName: "git", Description: &description, CreatedAt: stamp, UpdatedAt: stamp, ActiveMemoryCount: 2}}}
+	output, err := ExecuteWithMemory(context.Background(), []string{"tags", "search", "operations"}, bytes.NewReader(nil), stubService{}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"ok\":true,\"data\":{\"tags\":[{\"id\":\"tag-id\",\"name\":\"Git\",\"normalized_name\":\"git\",\"description\":\"Git operations\",\"created_at\":\"2026-08-05T12:00:00Z\",\"updated_at\":\"2026-08-05T12:00:00Z\",\"active_memory_count\":2}]}}\n"
+	if string(output) != want || service.tagQuery != "operations" {
+		t.Fatalf("output=%s query=%q", output, service.tagQuery)
+	}
+	output, err = ExecuteWithMemory(context.Background(), []string{"tags", "list"}, bytes.NewReader(nil), stubService{}, &memoryStub{})
+	if err != nil || string(output) != "{\"ok\":true,\"data\":{\"tags\":[]}}\n" {
+		t.Fatalf("empty list=%s err=%v", output, err)
+	}
 }
 
 func TestMemoryCommandsUseStrictInputAndExactJSON(t *testing.T) {

@@ -81,12 +81,13 @@ func TestMemoryRepositoryCreateGetDuplicateIsolationAndFTS(t *testing.T) {
 func TestMemoryRepositoryReusesCanonicalTagAndFiltersWithAND(t *testing.T) {
 	repo, database := memoryTestRepository(t)
 	stamp := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
-	goTag := memory.Tag{ID: "go-id", Name: "Go", NormalizedName: "go", CreatedAt: stamp}
-	dbTag := memory.Tag{ID: "db-id", Name: "Database", NormalizedName: "database", CreatedAt: stamp}
+	firstDescription, ignoredDescription := "Git language", "must not replace"
+	goTag := memory.Tag{ID: "go-id", Name: "Go", NormalizedName: "go", Description: &firstDescription, CreatedAt: stamp, UpdatedAt: stamp}
+	dbTag := memory.Tag{ID: "db-id", Name: "Database", NormalizedName: "database", CreatedAt: stamp, UpdatedAt: stamp}
 	if _, err := repo.Create(context.Background(), memoryRecord("m1", "p1", strings64("b"), "one", goTag, dbTag)); err != nil {
 		t.Fatal(err)
 	}
-	variant := memory.Tag{ID: "new-id", Name: "GO", NormalizedName: "go", CreatedAt: stamp}
+	variant := memory.Tag{ID: "new-id", Name: "GO", NormalizedName: "go", Description: &ignoredDescription, CreatedAt: stamp, UpdatedAt: stamp}
 	record := memoryRecord("m2", "p1", strings64("c"), "two", variant)
 	record.Memory.Importance = 2
 	if _, err := repo.Create(context.Background(), record); err != nil {
@@ -96,7 +97,7 @@ func TestMemoryRepositoryReusesCanonicalTagAndFiltersWithAND(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Tags[0].ID != "go-id" || got.Tags[0].Name != "Go" {
+	if got.Tags[0].ID != "go-id" || got.Tags[0].Name != "Go" || got.Tags[0].Description == nil || *got.Tags[0].Description != firstDescription {
 		t.Fatalf("canonical tag = %#v", got.Tags[0])
 	}
 	values, err := repo.List(context.Background(), "p1", memory.ListFilter{Tags: []string{"go", "database"}, MinImportance: 3})
@@ -113,13 +114,37 @@ func TestMemoryRepositoryReusesCanonicalTagAndFiltersWithAND(t *testing.T) {
 	if !strings.Contains(snapshot, `"id":"go-id"`) {
 		t.Fatalf("snapshot did not use canonical tag: %s", snapshot)
 	}
+	tags, err := repo.SearchTags(context.Background(), "p1", "language")
+	if err != nil || len(tags) != 1 || tags[0].ID != "go-id" || tags[0].ActiveMemoryCount != 2 {
+		t.Fatalf("searched tags=%#v err=%v", tags, err)
+	}
+	tags, err = repo.SearchTags(context.Background(), "p1", "a")
+	if err != nil || len(tags) != 2 || tags[0].ID != "go-id" || tags[1].ID != "db-id" {
+		t.Fatalf("ordered tags=%#v err=%v", tags, err)
+	}
+	otherProjectTag := memory.Tag{ID: "other-go", Name: "Go", NormalizedName: "go", CreatedAt: stamp, UpdatedAt: stamp}
+	if _, err = repo.Create(context.Background(), memoryRecord("p2-memory", "p2", strings64("z"), "other", otherProjectTag)); err != nil {
+		t.Fatal(err)
+	}
+	result := database.GORM().Exec("INSERT INTO memory_tags (project_id,memory_id,tag_id,created_at) VALUES (?,?,?,?)", "p1", "m1", "other-go", stamp.Format(time.RFC3339))
+	if result.Error == nil {
+		t.Fatal("cross-project association was accepted")
+	}
+	var crossCount int
+	if err = database.GORM().Raw("SELECT count(*) FROM memory_tags WHERE memory_id = ? AND tag_id = ?", "m1", "other-go").Scan(&crossCount).Error; err != nil || crossCount != 0 {
+		t.Fatalf("cross-project association count=%d err=%v", crossCount, err)
+	}
+	tags, err = repo.ListTags(context.Background(), "p1")
+	if err != nil || len(tags) != 2 || tags[0].NormalizedName != "database" || tags[1].ID != "go-id" {
+		t.Fatalf("listed tags=%#v err=%v", tags, err)
+	}
 }
 func strings64(v string) string { return strings.Repeat(v, 64) }
 
 func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
 	repo, database := memoryTestRepository(t)
 	stamp := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
-	tag := memory.Tag{ID: "tag-life", Name: "Go", NormalizedName: "go", CreatedAt: stamp}
+	tag := memory.Tag{ID: "tag-life", Name: "Go", NormalizedName: "go", CreatedAt: stamp, UpdatedAt: stamp}
 	created, err := repo.Create(context.Background(), memoryRecord("life", "p1", strings64("d"), "first", tag))
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +181,10 @@ func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
 	if err = database.GORM().Raw("SELECT count(*) FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&ftsCount).Error; err != nil || ftsCount != 0 {
 		t.Fatalf("deleted fts=%d err=%v", ftsCount, err)
 	}
+	tags, err := repo.ListTags(context.Background(), "p1")
+	if err != nil || len(tags) != 1 || tags[0].ActiveMemoryCount != 0 {
+		t.Fatalf("deleted tag count=%#v err=%v", tags, err)
+	}
 	restored := created
 	restored.Version = 4
 	restored.UpdatedAt = stamp.Add(3 * time.Minute)
@@ -172,5 +201,9 @@ func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
 	}
 	if err = database.GORM().Raw("SELECT count(*) FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&ftsCount).Error; err != nil || ftsCount != 1 {
 		t.Fatalf("restored fts=%d err=%v", ftsCount, err)
+	}
+	tags, err = repo.ListTags(context.Background(), "p1")
+	if err != nil || tags[0].ActiveMemoryCount != 1 {
+		t.Fatalf("restored tag count=%#v err=%v", tags, err)
 	}
 }
