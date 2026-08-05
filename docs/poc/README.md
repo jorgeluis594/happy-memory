@@ -32,7 +32,7 @@ Una tarea se considera terminada cuando todos sus criterios y su escenario integ
 
 El plan separa explícitamente dos responsabilidades:
 
-1. **Inicialización del CLI:** prepara el almacenamiento global del usuario. Crea de manera segura el directorio, la base SQLite y el esquema cuando hacen falta, o aplica migraciones compatibles. No identifica todavía un repositorio.
+1. **Inicialización del CLI:** crea y configura de manera segura la base SQLite global y vacía, y prepara el motor de migraciones sin ejecutar migraciones reales. No identifica todavía un repositorio.
 2. **Inicialización de un proyecto:** vincula el repositorio Git actual con un `project_id` y registra ese proyecto en la base ya preparada.
 
 La inicialización del almacenamiento es un bootstrap interno e idempotente que se ejecuta antes de cualquier operación que necesite la base. No se agrega un comando público distinto para esta acción dentro del POC.

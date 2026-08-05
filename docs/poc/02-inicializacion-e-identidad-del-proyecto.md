@@ -18,6 +18,7 @@ El usuario puede inicializar un repositorio, consultar su identidad estable y di
 
 ### Incluye
 
+- La primera migración SQL embebida, que crea la tabla `projects` y se ejecuta mediante el helper preparado en la Tarea 01.
 - `happy-memory init [--name <name>]`.
 - Detección del repositorio Git asociado al directorio de trabajo.
 - Resolución de la configuración común de Git.

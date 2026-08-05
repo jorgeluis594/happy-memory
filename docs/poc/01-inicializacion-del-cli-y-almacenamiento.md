@@ -12,7 +12,7 @@ Este incremento entrega el bootstrap del producto. No es la inicialización de u
 
 ## Resultado de producto
 
-Una instalación nueva de `happy-memory` puede preparar automáticamente un almacenamiento local, privado y compatible. Ejecuciones posteriores reutilizan los datos existentes y aplican únicamente los cambios de esquema requeridos.
+Una instalación nueva de `happy-memory` puede crear y abrir automáticamente una base SQLite local, privada y vacía. El motor de migraciones queda preparado para los incrementos posteriores, sin ejecutarse todavía durante el bootstrap.
 
 ## Alcance
 
@@ -21,12 +21,10 @@ Una instalación nueva de `happy-memory` puede preparar automáticamente un alma
 - Resolver el directorio estándar de datos de aplicaciones del sistema operativo para el usuario actual.
 - Crear el directorio y el archivo de base de datos cuando no existen.
 - Restringir el acceso al directorio y al archivo al usuario actual.
-- Cargar el esquema versionado completo requerido por el POC, incluido FTS5.
-- Registrar y comprobar la versión del esquema.
-- Aplicar migraciones embebidas, ordenadas y transaccionales cuando la base está desactualizada.
+- Abrir una única conexión `database/sql` y construir GORM sobre ella.
 - Habilitar claves foráneas, WAL y el tiempo de espera de contención requerido por el producto.
-- Ejecutar el bootstrap de forma idempotente antes de cualquier comando que necesite almacenamiento.
-- Responder mediante el contrato JSON estable si el almacenamiento no puede prepararse.
+- Exponer un cierre explícito de la conexión.
+- Preparar un helper de goose que aplique migraciones recibidas como `fs.FS`, sin incluir ni ejecutar migraciones reales todavía.
 
 ### Fuera de alcance
 
@@ -36,30 +34,29 @@ Una instalación nueva de `happy-memory` puede preparar automáticamente un alma
 - Reparar automáticamente una base corrupta.
 - Cifrar, sincronizar, purgar o importar la base.
 - Agregar un comando público específico para inicializar el almacenamiento.
+- Crear tablas del dominio, FTS5 o metadata persistente de goose durante el bootstrap.
+- Definir respuestas JSON o clasificar errores como `STORE_ERROR` y `STORE_BUSY`.
 
 ## Criterios de aceptación de producto
 
-1. En un entorno de usuario sin datos previos, la primera operación que requiere almacenamiento crea el directorio de aplicación, la base SQLite y el esquema completo sin pasos manuales.
+1. Abrir el almacenamiento en un entorno de usuario sin datos previos crea el directorio de aplicación y una base SQLite vacía sin pasos manuales.
 2. El directorio y el archivo creados no conceden acceso a otros usuarios del sistema.
-3. Una segunda ejecución conserva los datos existentes y no vuelve a crear ni reiniciar la base.
-4. Si la base tiene una versión anterior compatible, la siguiente ejecución aplica todas las migraciones pendientes en orden y deja disponible la versión esperada por el binario.
-5. Si una migración falla, no queda un esquema parcialmente actualizado y la operación solicitada no continúa.
-6. Si la base tiene una versión incompatible o más reciente que la soportada, el comando falla de forma segura sin modificarla.
-7. Después del bootstrap están habilitadas las claves foráneas, el modo WAL y FTS5.
-8. Si el directorio o la base no son accesibles, el proceso termina con código distinto de cero y emite en `stderr` un error JSON con `ok: false` y un código estable de almacenamiento.
-9. Una inicialización exitosa no escribe mensajes no JSON en `stdout` ni en `stderr`.
-10. La preparación del almacenamiento funciona sin depender del directorio de trabajo ni de que este pertenezca a un repositorio Git.
+3. Una segunda apertura conserva los datos existentes y no vuelve a crear ni reiniciar la base.
+4. La conexión tiene habilitadas las claves foráneas, WAL y un `busy_timeout` de 5000 ms.
+5. GORM y las consultas directas con `database/sql` comparten la misma conexión.
+6. La base recién creada no contiene tablas del dominio ni metadata de goose.
+7. El helper de goose aplica correctamente migraciones proporcionadas por el llamador, pero el bootstrap normal no lo ejecuta.
+8. La preparación del almacenamiento funciona sin depender del directorio de trabajo ni de que este pertenezca a un repositorio Git.
 
 ## Escenario integral de validación
 
-1. Ejecutar una operación administrativa en un entorno sin directorio de datos.
-2. Verificar que el almacenamiento global y el esquema aparecen con permisos restringidos.
-3. Crear un registro de prueba mediante una operación soportada por una tarea posterior.
-4. Volver a ejecutar el CLI y comprobar que el registro continúa presente.
-5. Simular una base con una migración compatible pendiente y confirmar que se actualiza sin perder el registro.
-6. Simular un fallo durante una migración y confirmar que la versión y el esquema anteriores permanecen íntegros.
+1. Abrir el almacenamiento en un entorno sin directorio de datos.
+2. Verificar que el directorio y el archivo aparecen con permisos restringidos y que la base no contiene tablas.
+3. Insertar un registro de prueba, cerrar, volver a abrir y comprobar que continúa presente.
+4. Verificar las tres opciones de SQLite y el uso compartido de la conexión por GORM.
+5. Ejecutar el helper contra una migración temporal y comprobar que el bootstrap normal no crea su tabla ni la metadata de goose.
 
-El escenario se aprueba cuando el almacenamiento queda listo de forma automática, repetible y sin pérdida o exposición de datos.
+El escenario se aprueba cuando la base vacía queda lista de forma automática, repetible y sin pérdida o exposición de datos, y el motor de migraciones queda disponible para la tarea siguiente.
 
 ## Trazabilidad
 

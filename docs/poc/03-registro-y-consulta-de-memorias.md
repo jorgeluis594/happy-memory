@@ -18,6 +18,7 @@ El usuario puede crear una memoria válida, obtenerla por ID y explorar las memo
 
 ### Incluye
 
+- Las migraciones del esquema requerido para memorias, revisiones, etiquetas, asociaciones y FTS5.
 - `happy-memory create --input -` con JSON por `stdin`.
 - Tipos `fact`, `decision`, `constraint`, `preference`, `procedure` y `lesson`.
 - Validación de título, contenido, importancia, confianza, atributos, etiquetas y procedencia del agente.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create persistence migration"
+  short_description: "Create and validate SQLite migrations with Goose"
+  default_prompt: "Use $create-persistence-migration to create and validate this fully specified Goose migration."
