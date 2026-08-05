@@ -1,177 +1,177 @@
-# Especificación de producto: happy-memory CLI POC
+# Product Specification: happy-memory CLI POC
 
-Fecha: 2026-08-05
+Date: 2026-08-05
 
-Estado: diseño aprobado para revisión escrita
+Status: approved design pending written review
 
-## 1. Propósito
+## 1. Purpose
 
-`happy-memory` es un CLI local para persistir y recuperar memorias de agentes de IA que trabajan sobre repositorios Git. El CLI es el intermediario determinista entre los consumidores y una base SQLite compartida por todos los proyectos del usuario.
+`happy-memory` is a local CLI for persisting and retrieving memories used by AI agents working in Git repositories. The CLI is the deterministic intermediary between its consumers and a single SQLite database shared by all of the user's projects.
 
-La interpretación semántica queda fuera del CLI. El consumidor decide qué buscar, crear, editar o eliminar. El CLI se ocupa de:
+Semantic interpretation remains outside the CLI. The consumer decides what to search for, create, edit, or delete. The CLI is responsible for:
 
-- Resolver el proyecto actual.
-- Validar entradas.
-- Mantener la integridad y el historial.
-- Buscar texto mediante FTS5.
-- Aplicar filtros y ranking determinista.
-- Producir respuestas JSON estables.
+- Resolving the current project.
+- Validating inputs.
+- Preserving integrity and history.
+- Searching text with FTS5.
+- Applying deterministic filters and ranking.
+- Producing stable JSON responses.
 
-Esta especificación describe el producto, sus contratos y su modelo de datos. Las reglas de arquitectura del repositorio están documentadas por separado en `docs/architecture.md`.
+This specification describes the product, its contracts, and its data model. Repository architecture rules are documented separately in `docs/architecture.md`.
 
-## 2. Alcance del POC
+## 2. POC scope
 
-El POC incluye:
+The POC includes:
 
-- Una única base SQLite global para todos los proyectos.
-- Aislamiento lógico estricto por `project_id`.
-- Inicialización de repositorios Git.
-- Memorias atómicas y tipadas.
-- CRUD mediante comandos individuales.
-- Updates parciales con control optimista de versión.
-- Soft delete y restauración.
-- Historial mediante snapshots completos e inmutables.
-- Tags libres, descritos opcionalmente y aislados por proyecto.
-- Prevención de duplicados exactos.
-- Full-text search sobre título y contenido.
-- Ranking determinista basado en BM25, importancia y confianza.
-- Salida JSON para todos los comandos.
-- Diagnóstico básico del almacenamiento.
+- One global SQLite database for all projects.
+- Strict logical isolation by `project_id`.
+- Git repository initialization.
+- Atomic, typed memories.
+- CRUD through individual commands.
+- Partial updates with optimistic version control.
+- Soft deletion and restoration.
+- History through complete, immutable snapshots.
+- Free-form tags with optional descriptions, isolated by project.
+- Exact duplicate prevention.
+- Full-text search over title and content.
+- Deterministic ranking based on BM25, importance, and confidence.
+- JSON output for every command.
+- Basic storage diagnostics.
 
-Quedan fuera del POC:
+The following are outside the POC:
 
-- Hooks y el momento en que cada integración invoca el CLI.
-- Skills de maintainer y recall.
-- Recuperación inicial sin una query.
-- Especializaciones o audiencias de subagentes.
-- Embeddings y búsqueda vectorial.
-- Sincronización entre máquinas o usuarios.
-- Purga automática de memorias o revisiones.
-- Cifrado de la base.
-- Almacenamiento de sesiones, prompts, respuestas o transcripciones.
-- Evidencias o fuentes estructuradas por memoria.
-- Estados `archived` y `superseded`.
+- Hooks and when each integration invokes the CLI.
+- Maintainer and recall skills.
+- Initial retrieval without a query.
+- Subagent specializations or audiences.
+- Embeddings and vector search.
+- Synchronization across machines or users.
+- Automatic purging of memories or revisions.
+- Database encryption.
+- Storage of sessions, prompts, responses, or transcripts.
+- Structured evidence or sources for memories.
+- `archived` and `superseded` states.
 
-La base se almacena fuera de los repositorios, en el directorio estándar de datos de aplicaciones del usuario. El directorio y el archivo deben crearse con permisos restringidos al usuario actual. El repositorio solo conserva su identificador en la configuración local de Git.
+The database is stored outside repositories in the operating system's standard application data directory. The directory and database file must be created with permissions restricted to the current user. A repository stores only its identifier in local Git configuration.
 
-## 3. Identidad y aislamiento del proyecto
+## 3. Project identity and isolation
 
-### 3.1 Identificador
+### 3.1 Identifier
 
-Cada repositorio inicializado recibe un UUID generado por `happy-memory`. El identificador se persiste en la configuración local compartida de Git bajo una clave propia del producto.
+Each initialized repository receives a UUID generated by `happy-memory`. The identifier is persisted under a product-specific key in the repository's shared local Git configuration.
 
-El identificador no se deriva de:
+The identifier is not derived from:
 
-- La ruta del worktree.
-- La ruta del repositorio.
-- El remote de Git.
-- El commit o la rama actual.
+- The worktree path.
+- The repository path.
+- The Git remote.
+- The current commit or branch.
 
-### 3.2 Worktrees y clones
+### 3.2 Worktrees and clones
 
-- Los worktrees enlazados comparten la configuración común de Git y, por tanto, el mismo `project_id`.
-- Una clonación independiente no conserva la configuración local y recibe un nuevo `project_id`.
-- Mover el repositorio no cambia su identidad, porque la ruta no forma parte del identificador.
+- Linked worktrees share Git's common configuration and therefore share the same `project_id`.
+- An independent clone does not preserve local Git configuration and receives a new `project_id`.
+- Moving a repository does not change its identity because the path is not part of the identifier.
 
-### 3.3 Resolución del proyecto
+### 3.3 Project resolution
 
-Las operaciones de memoria, tags y búsqueda siempre resuelven el proyecto desde el repositorio Git correspondiente al directorio de trabajo actual.
+Memory, tag, and search operations always resolve the project from the Git repository associated with the current working directory.
 
-Durante el POC:
+During the POC:
 
-- No existe un flag `--project-id` para operaciones normales.
-- Un comando ejecutado fuera de un repositorio inicializado falla con `PROJECT_NOT_INITIALIZED`.
-- Los comandos administrativos, como `projects list`, pueden ejecutarse fuera de un repositorio.
+- Normal operations do not accept a `--project-id` flag.
+- A command executed outside an initialized repository fails with `PROJECT_NOT_INITIALIZED`.
+- Administrative commands such as `projects list` may run outside a repository.
 
-### 3.4 Inicialización
+### 3.4 Initialization
 
 ```text
 happy-memory init [--name <name>]
 ```
 
-`init` es idempotente y debe:
+`init` is idempotent and must:
 
-1. Verificar que el directorio pertenece a un repositorio Git.
-2. Resolver la configuración común del repositorio.
-3. Leer el `project_id` existente o generar uno nuevo.
-4. Persistir el identificador en la configuración Git.
-5. Crear o reconciliar el registro del proyecto en SQLite.
-6. Verificar y aplicar las migraciones requeridas.
-7. Verificar la disponibilidad del índice full-text.
+1. Verify that the current directory belongs to a Git repository.
+2. Resolve the repository's common configuration.
+3. Read the existing `project_id` or generate a new one.
+4. Persist the identifier in Git configuration.
+5. Create or reconcile the project record in SQLite.
+6. Verify and apply required migrations.
+7. Verify full-text index availability.
 
-Si existe un `project_id` en Git pero falta su registro en SQLite, `init` recrea el registro usando el mismo identificador.
+If a `project_id` exists in Git but its SQLite record is missing, `init` recreates the record with the same identifier.
 
-Si no se proporciona `--name`, el nombre visible del proyecto se infiere del directorio principal del repositorio. El nombre es descriptivo y no participa en la identidad.
+If `--name` is omitted, the display name is inferred from the repository's main directory. The name is descriptive and does not participate in identity.
 
-## 4. Concepto de memoria
+## 4. Memory concept
 
-### 4.1 Atomicidad
+### 4.1 Atomicity
 
-Cada registro representa una sola idea reutilizable. El POC asume memorias breves, pero `content` se almacena como texto sin imponer un límite pequeño que impida experimentar posteriormente con contenido más extenso.
+Each record represents one reusable idea. The POC assumes short memories, but `content` is stored as text without a small limit that would prevent later experiments with longer content.
 
-Una memoria tiene:
+A memory has:
 
-- Un título breve.
-- Un contenido completo.
-- Exactamente un tipo.
-- Importancia y confianza obligatorias.
-- Cero o más tags.
-- Atributos JSON opcionales.
-- Una versión vigente y un historial de revisiones.
+- A short title.
+- Complete content.
+- Exactly one type.
+- Required importance and confidence values.
+- Zero or more tags.
+- Optional JSON attributes.
+- A current version and a revision history.
 
-No existe un campo `summary`. Para representaciones compactas se utiliza `title`.
+There is no `summary` field. Compact representations use `title`.
 
-### 4.2 Tipos
+### 4.2 Types
 
-| Tipo | Significado |
+| Type | Meaning |
 | --- | --- |
-| `fact` | Hecho verificable y vigente del proyecto. |
-| `decision` | Elección tomada y su contexto o razón. |
-| `constraint` | Regla obligatoria o límite que debe respetarse. |
-| `preference` | Convención deseada, pero no necesariamente obligatoria. |
-| `procedure` | Secuencia reutilizable para realizar una tarea. |
-| `lesson` | Problema conocido, hallazgo o aprendizaje obtenido de una experiencia. |
+| `fact` | A verifiable, current fact about the project. |
+| `decision` | A choice that was made and its context or rationale. |
+| `constraint` | A mandatory rule or limit that must be respected. |
+| `preference` | A desired convention that is not necessarily mandatory. |
+| `procedure` | A reusable sequence for completing a task. |
+| `lesson` | A known problem, finding, or lesson learned from experience. |
 
-El tipo expresa la naturaleza de la memoria. Los temas se representan mediante tags y no mediante nuevos tipos.
+The type describes the nature of the memory. Topics are represented by tags rather than new types.
 
-### 4.3 Importancia y confianza
+### 4.3 Importance and confidence
 
-Ambos valores son enteros obligatorios entre `1` y `5`.
+Both values are required integers from `1` to `5`.
 
-- `importance` expresa el impacto que tendría recordar la información en trabajo futuro.
-- `confidence` expresa qué tan fiable o confirmada está la información.
+- `importance` expresses the future impact of remembering the information.
+- `confidence` expresses how reliable or confirmed the information is.
 
-Son dimensiones independientes. Una memoria puede ser importante y poco confiable, o poco importante y estar completamente confirmada.
+They are independent dimensions. A memory may be important but uncertain, or less important but fully confirmed.
 
-El CLI valida y utiliza estos valores, pero no decide cómo debe asignarlos el consumidor.
+The CLI validates and uses these values but does not decide how the consumer assigns them.
 
-### 4.4 Atributos JSON
+### 4.4 JSON attributes
 
-`attributes_json` permite conservar estructura específica del tipo de memoria sin crear tablas diferentes para cada tipo.
+`attributes_json` preserves optional structure specific to a memory type without requiring a different table for each type.
 
-Reglas del POC:
+POC rules:
 
-- Es opcional.
-- Debe contener JSON válido.
-- Se devuelve como parte de la memoria.
-- Se conserva en cada revisión.
-- No participa en full-text search.
-- No participa en filtros o ranking.
+- It is optional.
+- It must contain valid JSON.
+- It is returned with the memory.
+- It is preserved in every revision.
+- It does not participate in full-text search.
+- It does not participate in filtering or ranking.
 
-Si una propiedad necesita filtrarse, ordenarse, validarse o indexarse en el futuro, deberá promoverse a una columna o relación explícita.
+If a property needs to be filtered, sorted, validated, or indexed in the future, it must be promoted to an explicit column or relationship.
 
-## 5. Modelo de datos
+## 5. Data model
 
-### 5.1 Relaciones
+### 5.1 Relationships
 
 ```mermaid
 erDiagram
-    PROJECTS ||--o{ MEMORIES : contiene
-    MEMORIES ||--o{ MEMORY_REVISIONS : versiona
-    PROJECTS ||--o{ TAGS : define
-    MEMORIES ||--o{ MEMORY_TAGS : clasifica
-    TAGS ||--o{ MEMORY_TAGS : asigna
-    MEMORIES ||--o| MEMORY_FTS : indexa
+    PROJECTS ||--o{ MEMORIES : contains
+    MEMORIES ||--o{ MEMORY_REVISIONS : versions
+    PROJECTS ||--o{ TAGS : defines
+    MEMORIES ||--o{ MEMORY_TAGS : classifies
+    TAGS ||--o{ MEMORY_TAGS : assigns
+    MEMORIES ||--o| MEMORY_FTS : indexes
 ```
 
 ### 5.2 Projects
@@ -185,16 +185,16 @@ projects
 - updated_at                 TIMESTAMP NOT NULL
 ```
 
-`last_known_git_common_dir` es informativo. Puede actualizarse cuando el repositorio se mueve y nunca participa en la identidad.
+`last_known_git_common_dir` is informational. It may change when the repository moves and never participates in identity.
 
 ### 5.3 Memories
 
-`memories` contiene exclusivamente el estado vigente de cada memoria.
+`memories` contains only the current state of each memory.
 
 ```text
 memories
-- row_id              INTEGER, PK interna para FTS5
-- id                  UUID, identificador público único
+- row_id              INTEGER, internal PK for FTS5
+- id                  UUID, unique public identifier
 - project_id          UUID, FK → projects.id
 - current_version     INTEGER NOT NULL
 - type                TEXT NOT NULL
@@ -202,52 +202,52 @@ memories
 - content             TEXT NOT NULL
 - importance          INTEGER NOT NULL
 - confidence          INTEGER NOT NULL
-- attributes_json     JSON opcional
+- attributes_json     optional JSON
 - content_hash        TEXT NOT NULL
 - created_at          TIMESTAMP NOT NULL
 - updated_at          TIMESTAMP NOT NULL
-- deleted_at          TIMESTAMP opcional
+- deleted_at          optional TIMESTAMP
 ```
 
-Restricciones:
+Constraints:
 
 ```text
 type IN (fact, decision, constraint, preference, procedure, lesson)
 importance BETWEEN 1 AND 5
 confidence BETWEEN 1 AND 5
-title no vacío
-content no vacío
-attributes_json nulo o JSON válido
+title is not empty
+content is not empty
+attributes_json is null or valid JSON
 current_version >= 1
 ```
 
-El par `(id, project_id)` también es único para permitir foreign keys compuestas que refuercen el aislamiento.
+The pair `(id, project_id)` is also unique so composite foreign keys can enforce project isolation.
 
-### 5.4 Detección de duplicados
+### 5.4 Duplicate detection
 
-`content_hash` es una columna derivada por el CLI. El consumidor no puede proporcionarla ni editarla.
+`content_hash` is a column derived by the CLI. Consumers cannot supply or edit it.
 
-La huella se calcula de manera determinista sobre una representación normalizada de:
+The fingerprint is calculated deterministically from a normalized representation of:
 
 ```text
 type + title + content
 ```
 
-No incluye tags ni `attributes_json`.
+It does not include tags or `attributes_json`.
 
-La versión inicial utiliza SHA-256. Antes de calcularlo, el CLI normaliza finales de línea a LF, elimina espacios exteriores de `title` y `content` y conserva mayúsculas, minúsculas y espacios internos. Los tres valores se codifican con límites inequívocos para evitar colisiones producidas por una concatenación ambigua.
+Version 1 uses SHA-256. Before hashing, the CLI normalizes line endings to LF, trims outer whitespace from `title` and `content`, and preserves casing and internal whitespace. The three values are encoded with unambiguous boundaries to avoid collisions caused by ambiguous concatenation.
 
-Solo puede existir una memoria activa con el mismo hash dentro de un proyecto:
+Only one active memory with the same hash may exist within a project:
 
 ```text
 UNIQUE(project_id, content_hash) WHERE deleted_at IS NULL
 ```
 
-La protección cubre duplicados exactos. Detectar equivalencia semántica queda fuera del CLI.
+This protects against exact duplicates. Detecting semantic equivalence remains outside the CLI.
 
 ### 5.5 Memory revisions
 
-Cada mutación crea una revisión inmutable con un snapshot completo del estado resultante.
+Every mutation creates an immutable revision containing a complete snapshot of the resulting state.
 
 ```text
 memory_revisions
@@ -261,30 +261,30 @@ memory_revisions
 - content_snapshot           TEXT NOT NULL
 - importance_snapshot        INTEGER NOT NULL
 - confidence_snapshot        INTEGER NOT NULL
-- attributes_snapshot_json   JSON opcional
+- attributes_snapshot_json   optional JSON
 - tags_snapshot_json         JSON NOT NULL
 - content_hash_snapshot      TEXT NOT NULL
-- deleted_at_snapshot        TIMESTAMP opcional
-- agent_name                 TEXT opcional
+- deleted_at_snapshot        optional TIMESTAMP
+- agent_name                 optional TEXT
 - agent_role                 primary | subagent | unknown, default unknown
 - worktree_path              TEXT NOT NULL
 - created_at                 TIMESTAMP NOT NULL
 ```
 
-Restricciones:
+Constraints:
 
 ```text
 UNIQUE(memory_id, version)
 FK(memory_id, project_id) → memories(id, project_id)
 ```
 
-`agent_name` y `agent_role` son metadata de procedencia proporcionada por el consumidor cuando esté disponible. No afectan el ranking. `worktree_path` es derivado por el CLI y tampoco participa en la identidad del proyecto.
+`agent_name` and `agent_role` are provenance metadata supplied by the consumer when available. They do not affect ranking. `worktree_path` is derived by the CLI and does not participate in project identity.
 
-Las revisiones no participan en la búsqueda normal.
+Revisions do not participate in normal searches.
 
 ### 5.6 Tags
 
-Los tags son libres, reutilizables y están aislados por proyecto.
+Tags are free-form, reusable, and isolated by project.
 
 ```text
 tags
@@ -292,19 +292,19 @@ tags
 - project_id         UUID NOT NULL
 - name               TEXT NOT NULL
 - normalized_name    TEXT NOT NULL
-- description        TEXT opcional
+- description        optional TEXT
 - created_at         TIMESTAMP NOT NULL
 - updated_at         TIMESTAMP NOT NULL
 ```
 
-Restricciones:
+Constraints:
 
 ```text
 UNIQUE(project_id, normalized_name)
 UNIQUE(id, project_id)
 ```
 
-La normalización convierte el nombre a minúsculas, elimina espacios exteriores, reemplaza secuencias de espacios internos por `-` y colapsa guiones repetidos. Un resultado vacío es inválido. Los tags no forman una taxonomía cerrada.
+Normalization lowercases the name, trims outer whitespace, replaces internal whitespace sequences with `-`, and collapses repeated hyphens. An empty result is invalid. Tags do not form a closed taxonomy.
 
 ```text
 memory_tags
@@ -318,11 +318,11 @@ FK(memory_id, project_id) → memories(id, project_id)
 FK(tag_id, project_id)    → tags(id, project_id)
 ```
 
-La duplicación de `project_id` en `memory_tags` permite impedir a nivel de base que una memoria se relacione con un tag de otro proyecto.
+Duplicating `project_id` in `memory_tags` lets the database prevent a memory from referencing a tag in another project.
 
-Un tag nuevo puede incluir una descripción opcional. Al recibir tags en una creación o actualización de memoria, el CLI reutiliza el tag normalizado existente o crea uno nuevo dentro del proyecto. La descripción proporcionada solo se aplica al crear el tag; si ya existe, conserva su descripción actual.
+A new tag may include an optional description. When a memory creation or update contains tags, the CLI reuses an existing normalized tag or creates a new tag within the project. A supplied description applies only when the tag is created; an existing tag retains its current description.
 
-### 5.7 Índice full-text
+### 5.7 Full-text index
 
 ```text
 memory_fts
@@ -331,16 +331,16 @@ memory_fts
 - content
 ```
 
-Reglas:
+Rules:
 
-- Solo indexa el estado vigente de memorias activas.
-- `title` y `content` son los únicos campos buscables.
-- El peso de `title` es `5`.
-- El peso de `content` es `1`.
-- `attributes_json`, revisiones y memorias eliminadas quedan fuera.
-- La sincronización con `memories` ocurre dentro de la misma transacción que la mutación.
+- It indexes only the current state of active memories.
+- `title` and `content` are the only searchable fields.
+- The `title` weight is `5`.
+- The `content` weight is `1`.
+- `attributes_json`, revisions, and deleted memories are excluded.
+- Synchronization with `memories` occurs in the same transaction as the mutation.
 
-## 6. Semántica de las operaciones
+## 6. Operation semantics
 
 ### 6.1 Create
 
@@ -348,20 +348,20 @@ Reglas:
 happy-memory create --input -
 ```
 
-Create recibe una memoria completa, excepto los campos derivados por el CLI.
+Create receives a complete memory except for fields derived by the CLI.
 
 ```json
 {
   "type": "decision",
-  "title": "Los worktrees comparten memoria",
-  "content": "El project_id se persiste en la configuración común de Git.",
+  "title": "Worktrees share memory",
+  "content": "The project_id is persisted in Git's common configuration.",
   "importance": 5,
   "confidence": 5,
   "attributes": {},
   "tags": [
     {
       "name": "git",
-      "description": "Identidad y operaciones de repositorios Git"
+      "description": "Git repository identity and operations"
     },
     {
       "name": "worktrees"
@@ -376,13 +376,13 @@ Create recibe una memoria completa, excepto los campos derivados por el CLI.
 
 Create:
 
-1. Valida la entrada.
-2. Resuelve o crea tags.
-3. Calcula `content_hash`.
-4. Rechaza duplicados activos.
-5. Crea `memories` con versión `1`.
-6. Crea la revisión `create` de versión `1`.
-7. Actualiza FTS5.
+1. Validates the input.
+2. Resolves or creates tags.
+3. Calculates `content_hash`.
+4. Rejects active duplicates.
+5. Creates `memories` with version `1`.
+6. Creates the version `1` `create` revision.
+7. Updates FTS5.
 
 ### 6.2 Update
 
@@ -390,24 +390,24 @@ Create:
 happy-memory update <memory-id> --expected-version <n> --input -
 ```
 
-Update recibe un patch:
+Update receives a patch:
 
-- Campo ausente: conserva el valor vigente.
-- `attributes: null`: elimina los atributos.
-- `tags: []`: elimina todos los tags.
-- `tags` presente: reemplaza el conjunto completo de tags.
-- Un patch que no cambia el estado no crea una revisión.
+- An absent field preserves the current value.
+- `attributes: null` removes the attributes.
+- `tags: []` removes every tag.
+- A present `tags` field replaces the complete tag set.
+- A patch that does not change state does not create a revision.
 
-Cuando existe un cambio:
+When a change exists, update:
 
-1. Compara `expected-version` con `current_version`.
-2. Construye y valida el nuevo estado completo.
-3. Recalcula `content_hash`.
-4. Comprueba duplicados activos.
-5. Incrementa la versión.
-6. Actualiza el estado vigente.
-7. Crea una revisión `update` con snapshot completo.
-8. Sincroniza tags y FTS5.
+1. Compares `expected-version` with `current_version`.
+2. Builds and validates the complete new state.
+3. Recalculates `content_hash`.
+4. Checks for active duplicates.
+5. Increments the version.
+6. Updates the current state.
+7. Creates an `update` revision with a complete snapshot.
+8. Synchronizes tags and FTS5.
 
 ### 6.3 Delete
 
@@ -415,15 +415,15 @@ Cuando existe un cambio:
 happy-memory delete <memory-id> --expected-version <n>
 ```
 
-Delete es lógico:
+Delete is logical:
 
-- Establece `deleted_at`.
-- Incrementa la versión.
-- Crea una revisión `delete`.
-- Excluye la memoria de FTS5, listados normales y búsquedas.
-- Conserva el registro, sus revisiones y sus relaciones actuales para permitir restauración.
+- It sets `deleted_at`.
+- It increments the version.
+- It creates a `delete` revision.
+- It excludes the memory from FTS5, normal listings, and searches.
+- It preserves the record, its revisions, and its current relationships so it can be restored.
 
-No existe hard delete automático en el POC.
+The POC does not provide automatic hard deletion.
 
 ### 6.4 Restore
 
@@ -431,30 +431,30 @@ No existe hard delete automático en el POC.
 happy-memory restore <memory-id> --version <n> --expected-version <n>
 ```
 
-Restore copia el snapshot histórico seleccionado al estado vigente, pero no rebobina el contador de versiones.
+Restore copies the selected historical snapshot into the current state but does not rewind the version counter.
 
-La restauración:
+Restoration:
 
-1. Comprueba `expected-version`.
-2. Lee el snapshot solicitado.
-3. Valida que no produzca un duplicado activo.
-4. Incrementa `current_version`.
-5. Crea una nueva revisión `restore`.
-6. Restaura tags y FTS5.
+1. Checks `expected-version`.
+2. Reads the requested snapshot.
+3. Validates that it will not create an active duplicate.
+4. Increments `current_version`.
+5. Creates a new `restore` revision.
+6. Restores tags and FTS5.
 
-### 6.5 Get, list e history
+### 6.5 Get, list, and history
 
 ```text
 happy-memory get <memory-id> [--include-deleted]
-happy-memory list [filtros] [--include-deleted]
+happy-memory list [filters] [--include-deleted]
 happy-memory history <memory-id>
 ```
 
-- `get` devuelve el estado vigente por ID.
-- `list` devuelve memorias vigentes del proyecto actual sin ranking textual. Acepta filtros de tipo, tags, importancia y confianza, y ordena por `updated_at DESC` y `memory_id ASC`.
-- `history` devuelve las revisiones ordenadas por versión.
-- `--include-deleted` permite a `get` y `list` incluir soft deletes para inspección administrativa.
-- Search nunca incluye memorias eliminadas.
+- `get` returns the current state by ID.
+- `list` returns current memories for the active project without textual ranking. It accepts type, tag, importance, and confidence filters and orders by `updated_at DESC`, then `memory_id ASC`.
+- `history` returns revisions ordered by version.
+- `--include-deleted` lets `get` and `list` include soft-deleted memories for administrative inspection.
+- Search never includes deleted memories.
 
 ### 6.6 Tags
 
@@ -463,28 +463,28 @@ happy-memory tags list
 happy-memory tags search <query>
 ```
 
-La respuesta incluye, como mínimo:
+The response includes at least:
 
-- Identificador.
-- Nombre canónico.
-- Descripción opcional.
-- Cantidad de memorias activas que lo utilizan.
+- Identifier.
+- Canonical name.
+- Optional description.
+- Number of active memories using the tag.
 
-Esto permite que un consumidor reutilice el vocabulario existente antes de crear tags nuevos.
+This lets a consumer reuse the existing vocabulary before creating tags.
 
-`tags search` hace una coincidencia de texto sin distinguir mayúsculas sobre el nombre y la descripción. Ordena primero por cantidad de memorias activas y después por nombre normalizado.
+`tags search` performs a case-insensitive text match over the name and description. It sorts first by active memory count and then by normalized name.
 
-## 7. Búsqueda y ranking
+## 7. Search and ranking
 
-### 7.1 Comando
+### 7.1 Command
 
 ```text
-happy-memory search "<query>" [filtros]
+happy-memory search "<query>" [filters]
 ```
 
-La query es obligatoria. El POC no incluye modos, perfiles configurables ni búsqueda bootstrap.
+The query is required. The POC does not include modes, configurable profiles, or bootstrap search.
 
-Filtros iniciales:
+Initial filters:
 
 ```text
 --type <type>
@@ -494,32 +494,32 @@ Filtros iniciales:
 --limit <n>
 ```
 
-- Los filtros se aplican dentro del proyecto actual.
-- Repetir `--tag` usa semántica AND.
-- `limit` tiene un máximo de `100`.
-- La query se interpreta como texto plano. El CLI escapa la sintaxis especial de FTS5.
+- Filters apply within the active project.
+- Repeating `--tag` uses AND semantics.
+- `limit` has a maximum value of `100`.
+- The query is treated as plain text. The CLI escapes special FTS5 syntax.
 
-### 7.2 Algoritmo versión 1
+### 7.2 Ranking algorithm version 1
 
-El proceso es:
+The process is:
 
-1. Resolver `project_id`.
-2. Excluir memorias eliminadas.
-3. Aplicar filtros estructurados.
-4. Obtener candidatos con BM25 sobre `title` y `content`.
-5. Normalizar la relevancia textual de forma determinista.
-6. Normalizar importancia y confianza.
-7. Calcular el score final.
-8. Aplicar desempates estables.
+1. Resolve `project_id`.
+2. Exclude deleted memories.
+3. Apply structured filters.
+4. Retrieve candidates with BM25 over `title` and `content`.
+5. Normalize textual relevance deterministically.
+6. Normalize importance and confidence.
+7. Calculate the final score.
+8. Apply stable tie-breakers.
 
-Normalización de metadata:
+Metadata normalization:
 
 ```text
 importance_score = (importance - 1) / 4
 confidence_score = (confidence - 1) / 4
 ```
 
-Fórmula:
+Formula:
 
 ```text
 final_score =
@@ -528,15 +528,15 @@ final_score =
   + 0.10 × confidence_score
 ```
 
-Los candidatos se ordenan primero por BM25. Para convertir esa posición textual a un valor estable entre `0` y `1`, la versión 1 usa normalización min-max sobre una ventana fija de hasta `100` candidatos ya filtrados:
+Candidates are first ordered by BM25. To convert textual position into a stable value from `0` to `1`, version 1 uses min-max normalization over a fixed window of up to `100` filtered candidates:
 
 ```text
 text_score = (worst_bm25 - candidate_bm25) / (worst_bm25 - best_bm25)
 ```
 
-Si existe un solo candidato o todos tienen el mismo BM25, `text_score` es `1` para todos.
+If there is only one candidate or all candidates have the same BM25 score, every candidate receives a `text_score` of `1`.
 
-Desempates:
+Tie-breakers:
 
 ```text
 final_score DESC
@@ -546,18 +546,18 @@ updated_at DESC
 memory_id ASC
 ```
 
-El score es específico de cada búsqueda y no se persiste.
+The score is specific to each search and is not persisted.
 
-### 7.3 Explicabilidad
+### 7.3 Explainability
 
-Cada resultado incluye el score final y sus componentes:
+Every result includes the final score and its components:
 
 ```json
 {
   "id": "mem_123",
   "type": "decision",
-  "title": "Los worktrees comparten memoria",
-  "content": "El project_id se guarda en la configuración común de Git.",
+  "title": "Worktrees share memory",
+  "content": "The project_id is stored in Git's common configuration.",
   "importance": 5,
   "confidence": 5,
   "tags": ["git", "worktrees"],
@@ -570,11 +570,11 @@ Cada resultado incluye el score final y sus componentes:
 }
 ```
 
-La respuesta de búsqueda identifica el algoritmo mediante `ranking_version: 1`. Los pesos no son configurables por el consumidor durante el POC.
+The search response identifies the algorithm with `ranking_version: 1`. Consumers cannot configure the weights during the POC.
 
-## 8. Contrato del CLI
+## 8. CLI contract
 
-### 8.1 Comandos
+### 8.1 Commands
 
 ```text
 happy-memory init [--name <name>]
@@ -586,8 +586,8 @@ happy-memory delete <memory-id> --expected-version <n>
 happy-memory restore <memory-id> --version <n> --expected-version <n>
 happy-memory history <memory-id>
 
-happy-memory search "<query>" [filtros]
-happy-memory list [filtros] [--include-deleted]
+happy-memory search "<query>" [filters]
+happy-memory list [filters] [--include-deleted]
 
 happy-memory tags list
 happy-memory tags search "<query>"
@@ -597,19 +597,19 @@ happy-memory projects list
 happy-memory doctor
 ```
 
-Las mutaciones son comandos individuales. No existe una operación batch en el POC.
+Mutations are individual commands. The POC has no batch operation.
 
-### 8.2 Entrada
+### 8.2 Input
 
-- Los documentos y patches se reciben como JSON mediante `stdin`.
-- Los argumentos simples, IDs, versiones y filtros se expresan mediante argumentos y flags.
-- El CLI nunca debe interpolar una query como SQL o como sintaxis FTS sin validación y escape.
+- Documents and patches are received as JSON through `stdin`.
+- Simple arguments, IDs, versions, and filters use positional arguments and flags.
+- The CLI must never interpolate a query as SQL or FTS syntax without validation and escaping.
 
-### 8.3 Salida
+### 8.3 Output
 
-Todos los comandos producen JSON.
+Every command produces JSON.
 
-Éxito:
+Success:
 
 ```json
 {
@@ -618,9 +618,9 @@ Todos los comandos producen JSON.
 }
 ```
 
-- Se escribe en `stdout`.
-- El proceso termina con código `0`.
-- Fechas y horas se representan en UTC con formato RFC 3339.
+- Written to `stdout`.
+- The process exits with code `0`.
+- Dates and times use UTC and RFC 3339 format.
 
 Error:
 
@@ -638,11 +638,11 @@ Error:
 }
 ```
 
-- Se escribe en `stderr`.
-- El proceso termina con código distinto de `0`.
-- No se muestran stack traces salvo en modo diagnóstico.
+- Written to `stderr`.
+- The process exits with a nonzero code.
+- Stack traces are omitted unless diagnostic mode is enabled.
 
-### 8.4 Errores estables
+### 8.4 Stable errors
 
 ```text
 PROJECT_NOT_INITIALIZED
@@ -654,112 +654,112 @@ STORE_BUSY
 STORE_ERROR
 ```
 
-`DUPLICATE_MEMORY` debe incluir el ID de la memoria activa existente cuando esté disponible. `VERSION_CONFLICT` debe incluir la versión actual.
+`DUPLICATE_MEMORY` includes the existing active memory ID when available. `VERSION_CONFLICT` includes the current version.
 
-## 9. Transacciones, concurrencia y consistencia
+## 9. Transactions, concurrency, and consistency
 
-Cada comando mutante se ejecuta en una única transacción que cubre:
+Each mutating command runs in one transaction covering:
 
-- Estado vigente.
-- Revisión.
-- Tags y asociaciones.
-- Índice full-text.
+- Current state.
+- Revision.
+- Tags and associations.
+- Full-text index.
 
-Si cualquier parte falla, la operación completa se revierte.
+If any part fails, the entire operation is rolled back.
 
-Requisitos operativos:
+Operational requirements:
 
 ```text
-foreign keys habilitadas
-WAL habilitado
-busy timeout configurado
-reintentos breves y acotados para conflictos de escritura
+foreign keys enabled
+WAL enabled
+busy timeout configured
+short, bounded retries for write contention
 ```
 
-SQLite permite múltiples lectores y un escritor simultáneo. Las transacciones de escritura deben mantenerse breves. Si la base continúa ocupada después de los reintentos, el CLI devuelve `STORE_BUSY`.
+SQLite permits multiple readers and one concurrent writer. Write transactions must remain short. If the database is still busy after retries, the CLI returns `STORE_BUSY`.
 
-Las migraciones son versionadas, embebidas con el producto y transaccionales. Todos los comandos comprueban que el esquema sea compatible antes de operar.
+Migrations are versioned, embedded with the product, and transactional. Every command verifies schema compatibility before operating.
 
-## 10. Diagnóstico
+## 10. Diagnostics
 
 ```text
 happy-memory doctor
 ```
 
-`doctor` comprueba al menos:
+`doctor` checks at least:
 
-- Acceso al archivo de base de datos.
-- Compatibilidad de la versión del esquema.
-- Integridad básica de SQLite.
-- Foreign keys habilitadas.
-- Disponibilidad de FTS5.
-- Coherencia entre memorias activas y el índice full-text.
+- Access to the database file.
+- Schema version compatibility.
+- Basic SQLite integrity.
+- Foreign key enforcement.
+- FTS5 availability.
+- Consistency between active memories and the full-text index.
 
-El diagnóstico informa problemas mediante JSON. No realiza reparaciones destructivas automáticamente.
+Diagnostics report problems as JSON. They do not perform destructive repairs automatically.
 
-## 11. Validación y reglas transversales
+## 11. Validation and cross-cutting rules
 
-- `title` y `content` son obligatorios y no pueden quedar vacíos después de normalizar espacios.
-- `importance` y `confidence` son enteros entre `1` y `5`.
-- `attributes` es nulo o un objeto JSON válido.
-- IDs y versiones deben tener el formato esperado.
-- Una memoria eliminada no puede editarse ni eliminarse nuevamente; debe restaurarse primero.
-- Una restauración puede fallar si produciría un duplicado activo.
-- Los tags son únicos por nombre normalizado y proyecto.
-- Toda consulta normal excluye memorias eliminadas.
-- Toda operación respeta el proyecto resuelto desde Git.
-- El CLI no invoca modelos ni interpreta semánticamente el contenido.
+- `title` and `content` are required and cannot be empty after trimming whitespace.
+- `importance` and `confidence` are integers from `1` to `5`.
+- `attributes` is null or a valid JSON object.
+- IDs and versions must use the expected format.
+- A deleted memory cannot be edited or deleted again; it must first be restored.
+- A restoration may fail if it would create an active duplicate.
+- Tags are unique by normalized name and project.
+- Every normal query excludes deleted memories.
+- Every operation respects the project resolved from Git.
+- The CLI does not invoke models or interpret content semantically.
 
-## 12. Criterios de aceptación
+## 12. Acceptance criteria
 
-### Identidad
+### Identity
 
-- Inicializar dos worktrees enlazados produce el mismo `project_id`.
-- Inicializar una clonación independiente produce otro `project_id`.
-- Mover un repositorio no cambia su `project_id`.
-- Ninguna operación normal puede seleccionar manualmente otro proyecto.
+- Initializing two linked worktrees produces the same `project_id`.
+- Initializing an independent clone produces a different `project_id`.
+- Moving a repository does not change its `project_id`.
+- No normal operation can manually select another project.
 
-### Memorias
+### Memories
 
-- Create genera versión `1` y su revisión correspondiente.
-- Update aplica patches y conserva snapshots completos.
-- Un patch sin cambios no genera una revisión.
-- Delete excluye una memoria de búsquedas sin borrar su historial.
-- Restore crea una nueva versión sin rebobinar el contador.
-- Los duplicados exactos activos se rechazan dentro del mismo proyecto.
-- La misma memoria puede existir en proyectos diferentes.
+- Create produces version `1` and its corresponding revision.
+- Update applies patches and preserves complete snapshots.
+- A no-op patch does not create a revision.
+- Delete excludes a memory from searches without deleting its history.
+- Restore creates a new version without rewinding the counter.
+- Active exact duplicates are rejected within the same project.
+- The same memory may exist in different projects.
 
 ### Tags
 
-- Tags con variaciones normalizables se reutilizan dentro del proyecto.
-- Tags iguales en proyectos diferentes permanecen aislados.
-- No puede crearse una relación entre memoria y tag de proyectos distintos.
-- Listar tags devuelve su descripción y cantidad de memorias activas.
+- Normalizable tag variations are reused within a project.
+- Identical tags in different projects remain isolated.
+- A relationship cannot link a memory and tag from different projects.
+- Listing tags returns their descriptions and active memory counts.
 
-### Búsqueda
+### Search
 
-- Solo busca en `title` y `content`.
-- Nunca devuelve memorias de otro proyecto o memorias eliminadas.
-- Respeta filtros de tipo, tags, importancia y confianza.
-- La misma base, query, filtros y versión del algoritmo producen el mismo orden.
-- Cada resultado explica los componentes de su score.
+- Search uses only `title` and `content`.
+- Search never returns memories from another project or deleted memories.
+- Search respects type, tag, importance, and confidence filters.
+- The same database state, query, filters, and algorithm version produce the same order.
+- Every result explains its score components.
 
-### Concurrencia e integridad
+### Concurrency and integrity
 
-- Dos updates basados en la misma versión no pueden sobrescribirse silenciosamente.
-- Un fallo al actualizar revisiones, tags o FTS revierte toda la mutación.
-- Los lectores pueden operar mientras existen escrituras breves en WAL.
-- Una contención no resuelta produce `STORE_BUSY` en JSON.
-- `doctor` detecta un esquema incompatible o un índice inconsistente.
+- Two updates based on the same version cannot silently overwrite each other.
+- A failure while updating revisions, tags, or FTS rolls back the entire mutation.
+- Readers can operate during short writes in WAL mode.
+- Unresolved contention produces a JSON `STORE_BUSY` error.
+- `doctor` detects an incompatible schema or inconsistent index.
 
-## 13. Consideraciones de crecimiento
+## 13. Growth considerations
 
-Una sola base compartida es suficiente para el POC y para un volumen amplio de memorias locales. Los factores que podrían justificar una evolución futura son:
+One shared database is sufficient for the POC and for a broad volume of local memories. The following conditions may justify future evolution:
 
-- Conflictos frecuentes entre escritores.
-- Crecimiento de revisiones hasta volver costoso el mantenimiento.
-- Necesidad de exportar, cifrar o eliminar proyectos de forma independiente.
-- Sincronización distribuida o uso multiusuario.
-- Requisitos de aislamiento físico.
+- Frequent writer conflicts.
+- Revision growth that makes maintenance expensive.
+- A need to export, encrypt, or delete projects independently.
+- Distributed synchronization or multi-user operation.
+- Physical isolation requirements.
 
-El crecimiento principal provendrá de `memory_revisions`, porque cada mutación conserva un snapshot completo. Cualquier función futura de purga debe ser explícita, auditable y separada del mantenimiento automático.
+Most growth will come from `memory_revisions` because every mutation preserves a complete snapshot. Any future purge feature must be explicit, auditable, and separate from automatic maintenance.
