@@ -21,24 +21,45 @@ La arquitectura debe permitir reemplazar una interfaz o mecanismo de persistenci
 
 ## 3. Regla de dependencias
 
-Las dependencias apuntan hacia el núcleo:
+Fuera de la raíz de composición, las dependencias entre módulos propios apuntan hacia el núcleo. `internal/app` es la excepción deliberada porque debe conocer las implementaciones para conectarlas. En el diagrama, `A --> B` significa que **A conoce, importa o llama a B**:
 
-```text
-cmd/happy-memory
-        |
-        v
-internal/app ---------------> internal/adapters/cli
-        |                              |
-        |                              v
-        +----------------------> internal/memory
-        |                              ^
-        v                              |
-internal/adapters/sqlite --------------+
-        |
-        +----------------------> GORM + SQLite
+```mermaid
+flowchart LR
+    subgraph EntryPoint["Punto de entrada"]
+        CMD["cmd/happy-memory"]
+    end
 
-internal/app -----------------> internal/project
+    subgraph Composition["Composición"]
+        APP["internal/app"]
+    end
+
+    subgraph Adapters["Adaptadores"]
+        CLI["adapters/cli"]
+        SQLITE["adapters/sqlite"]
+        FUTURE["adapters/http o mcp<br/>futuros"]
+    end
+
+    subgraph Core["Núcleo"]
+        MEMORY["internal/memory<br/>entidades, casos de uso<br/>y puerto Repository"]
+        PROJECT["internal/project<br/>identidad del repositorio"]
+    end
+
+    subgraph Technology["Tecnología externa"]
+        DB["GORM + SQLite"]
+    end
+
+    CMD -->|inicia| APP
+    APP -->|ensambla| CLI
+    APP -->|ensambla| SQLITE
+    APP -->|construye servicios| MEMORY
+    APP -->|resuelve el proyecto| PROJECT
+    CLI -->|invoca casos de uso| MEMORY
+    FUTURE -.->|invocarán los mismos casos de uso| MEMORY
+    SQLITE -->|implementa memory.Repository| MEMORY
+    SQLITE -->|usa| DB
 ```
+
+La flecha `SQLITE --> MEMORY` puede parecer contraintuitiva: existe porque `memory` define el contrato `Repository` que necesita y SQLite lo implementa. El núcleo no importa al adaptador SQLite. Esta inversión permite sustituir la persistencia sin cambiar los casos de uso.
 
 Reglas obligatorias:
 
