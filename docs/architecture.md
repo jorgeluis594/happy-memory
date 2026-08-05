@@ -85,38 +85,20 @@ internal/<domain>/
 └── errors.go
 ```
 
-## 5. Agregar código
+## 5. Responsabilidad de los archivos
 
-### Nuevo módulo
-
-1. Crear `internal/<domain>/` con los archivos mínimos.
-2. Agregar tipos, reglas y casos de uso.
-3. Declarar únicamente los puertos requeridos.
-4. Implementar sus entradas y salidas en `internal/adapters/`.
-5. Conectar las implementaciones en `internal/app`.
-
-### Nuevo caso de uso
-
-1. Agregarlo al paquete del dominio.
-2. Mantenerlo en `service.go` o separarlo en un archivo con el nombre de la operación.
-3. Extender los puertos solo cuando el caso de uso lo requiera.
-4. Exponerlo mediante el adaptador de entrada correspondiente.
-
-### Nuevo adaptador
-
-1. Crear o reutilizar `internal/adapters/<adapter>/`.
-2. Mantener allí los tipos, conversiones y detalles de la tecnología.
-3. Invocar casos de uso o implementar puertos existentes.
-4. Registrar la implementación en `internal/app`.
-
-## 6. Ubicación del código
-
-| Responsabilidad | Ubicación |
+| Archivo | Contenido |
 | --- | --- |
-| Tipo, regla o invariante del negocio | `internal/<domain>/` |
-| Caso de uso | `internal/<domain>/service.go` o archivo por operación |
-| Puerto requerido por un módulo | `internal/<domain>/<port>.go` |
-| Implementación de tecnología externa | `internal/adapters/<technology>/` |
-| Comando o handler | `internal/adapters/<input>/` |
-| Composición de dependencias | `internal/app/` |
-| Arranque de un proceso | `cmd/<executable>/main.go` |
+| `internal/<domain>/<domain>.go` | Tipos, entidades, reglas e invariantes del módulo |
+| `internal/<domain>/service.go` | Casos de uso mientras puedan mantenerse cohesionados |
+| `internal/<domain>/<operation>.go` | Un caso de uso separado cuando `service.go` crece |
+| `internal/<domain>/repository.go` | Puerto de persistencia requerido por el módulo |
+| `internal/<domain>/<port>.go` | Otro puerto requerido por el módulo |
+| `internal/<domain>/errors.go` | Errores propios del módulo |
+| `internal/adapters/<input>/<domain>_commands.go` | Comandos o handlers, validación de entrada y presentación |
+| `internal/adapters/<technology>/<domain>_repository.go` | Implementación del repositorio y conversiones de modelos |
+| `internal/app/app.go` | Construcción y conexión de dependencias |
+| `internal/app/config.go` | Configuración general de la aplicación |
+| `cmd/<executable>/main.go` | Arranque y ejecución del proceso |
+
+Los nombres son referencias de responsabilidad. Ningún archivo se crea hasta que exista el código que le corresponde.
