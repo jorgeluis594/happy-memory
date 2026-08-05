@@ -1,0 +1,19 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+# The standard preset includes govet, errcheck, ineffassign, staticcheck and
+# unused. Keep the configuration small and add rules only when they are useful.
+linters:
+  default: standard
+  enable:
+    - revive
+  settings:
+    govet:
+      enable:
+        - shadow
+
+formatters:
+  enable:
+    - gofmt

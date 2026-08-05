@@ -1,0 +1,8 @@
+# Binaries and test artifacts
+/happy-memory
+/bin/
+/coverage.out
+
+# Editor and environment files
+.DS_Store
+.env
