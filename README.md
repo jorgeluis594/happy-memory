@@ -18,6 +18,12 @@ make tidy
 make build
 ```
 
+Run tests with:
+
+```bash
+go test ./...
+```
+
 ### Create a worktree
 
 Create a branch from the current `HEAD`, add it as a sibling worktree, and move the

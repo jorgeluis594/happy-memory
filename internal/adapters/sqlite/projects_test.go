@@ -25,7 +25,7 @@ func TestProjectRepositoryReconcilesAndOrders(t *testing.T) {
 	if migrateErr := Migrate(context.Background(), database.SQL(), migrations); migrateErr != nil {
 		t.Fatal(migrateErr)
 	}
-	repository := NewProjectRepository(database.SQL())
+	repository := NewProjectRepository(database.GORM())
 	first := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
 	created, err := repository.Reconcile(context.Background(), "b", "Zulu", "/old", first)
 	if err != nil {

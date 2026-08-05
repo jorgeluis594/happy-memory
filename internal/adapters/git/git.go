@@ -40,7 +40,19 @@ func (adapter *Adapter) Resolve(ctx context.Context) (project.GitContext, error)
 	if err != nil {
 		return project.GitContext{}, storeError(err)
 	}
-	return project.GitContext{CommonDir: filepath.Clean(abs)}, nil
+	rootOutput, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return project.GitContext{}, storeError(err)
+	}
+	root, err := filepath.Abs(strings.TrimSpace(string(rootOutput)))
+	if err != nil {
+		return project.GitContext{}, storeError(err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return project.GitContext{}, storeError(err)
+	}
+	return project.GitContext{CommonDir: filepath.Clean(abs), WorktreeRoot: filepath.Clean(root)}, nil
 }
 
 // ReadID reads and validates the configured UUID.

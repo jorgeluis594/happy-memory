@@ -47,7 +47,10 @@ type Project struct {
 }
 
 // GitContext identifies a normalized common Git directory.
-type GitContext struct{ CommonDir string }
+type GitContext struct {
+	CommonDir    string
+	WorktreeRoot string
+}
 
 // GitIdentity accesses project identity in Git configuration.
 type GitIdentity interface {

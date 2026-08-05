@@ -13,6 +13,7 @@ import (
 
 	glebarezsqlite "github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const (
@@ -70,7 +71,7 @@ func open(ctx context.Context, path string) (*Database, error) {
 		return nil, fmt.Errorf("connect to SQLite database %q: %w", path, pingErr)
 	}
 
-	gormDB, err := gorm.Open(&glebarezsqlite.Dialector{Conn: sqlDB}, &gorm.Config{})
+	gormDB, err := gorm.Open(&glebarezsqlite.Dialector{Conn: sqlDB}, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("initialize GORM for SQLite database %q: %w", path, err)
