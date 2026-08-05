@@ -1,32 +1,66 @@
 # Lineamientos de arquitectura
 
-## 1. Propósito
+Esta guía define cómo organizar, extender y mantener el código respetando los límites arquitectónicos del repositorio.
 
-`happy-memory` es una aplicación local para persistir memoria de agentes. La primera interfaz será un CLI, pero el núcleo deberá poder ser consumido en el futuro por HTTP, MCP u otros adaptadores sin duplicar reglas de negocio.
-
-El sistema usará inicialmente SQLite y GORM. Las memorias estarán aisladas por proyecto. Un proyecto representa un repositorio y todos sus worktrees deben resolver el mismo `project_id` y, por tanto, compartir memoria.
-
-El alcance inicial contempla guardar, obtener, listar, buscar por texto completo y eliminar memorias con metadatos. El versionado mediante snapshots se diseñará en una iteración posterior; la arquitectura no debe impedirlo, pero tampoco debe introducir abstracciones de versionado antes de definir sus requisitos.
-
-## 2. Estilo arquitectónico
+## 1. Estilo arquitectónico
 
 Se adopta una **arquitectura hexagonal modular y pragmática** dentro de un monolito modular.
 
-- **Hexagonal:** el núcleo no depende de Cobra, GORM, SQLite, HTTP ni MCP. Las tecnologías externas se conectan mediante adaptadores.
-- **Modular:** el núcleo se organiza por capacidades del producto, inicialmente `memory` y `project`, no solo por capas técnicas globales.
-- **Pragmática:** se crean interfaces únicamente donde existe una frontera real o una necesidad concreta de sustitución. No se crea un paquete ni una interfaz por cada operación.
-- **Monolito modular:** inicialmente todo reside en un único módulo Go y se despliega como uno o pocos binarios. No hay servicios distribuidos.
+- **Hexagonal:** el núcleo no depende de frameworks, protocolos ni mecanismos de persistencia. Las tecnologías externas se conectan mediante adaptadores.
+- **Modular:** el núcleo se organiza por capacidades del negocio, no mediante capas técnicas globales.
+- **Pragmática:** se crean interfaces únicamente cuando existe una frontera real. No se crea un paquete ni una interfaz por cada operación.
+- **Monolito modular:** los módulos residen en un único módulo Go y se integran dentro del mismo proceso, aunque puedan existir varios ejecutables.
 
-La arquitectura debe permitir reemplazar una interfaz o mecanismo de persistencia sin reescribir las reglas del producto. No exige que todos los componentes sean intercambiables desde el primer día.
+El objetivo del estilo es mantener las reglas del negocio independientes de sus mecanismos de entrada, salida y ejecución.
+
+## 2. Componentes arquitectónicos
+
+### Módulo de dominio
+
+Un módulo representa una capacidad cohesionada del negocio y utiliza su propio vocabulario. Vive en `internal/<domain>/` y puede contener:
+
+- tipos, entidades y reglas propias del dominio;
+- casos de uso que coordinan esas reglas;
+- contratos requeridos para comunicarse con recursos externos;
+- errores independientes de cualquier protocolo.
+
+Un módulo no contiene detalles de frameworks, almacenamiento ni presentación. Tampoco replica automáticamente subcarpetas como `domain/`, `usecases/` o `infrastructure/`.
+
+### Puertos
+
+Un puerto es un contrato que el núcleo necesita para comunicarse con algo externo. Se declara cerca de su consumidor, dentro del módulo de dominio.
+
+Por ejemplo, si un caso de uso necesita persistencia, el módulo puede definir un `Repository`. Si necesita otra capacidad externa, utiliza un nombre que exprese esa capacidad en lugar de forzarla dentro de un repositorio genérico.
+
+### Adaptadores
+
+Un adaptador conecta el núcleo con una interfaz o tecnología externa:
+
+- un adaptador de entrada traduce una solicitud externa a una llamada de caso de uso;
+- un adaptador de salida implementa un puerto requerido por el núcleo.
+
+Los adaptadores se agrupan por interfaz o tecnología en `internal/adapters/<adapter>/`. Pueden contener modelos propios y son responsables de convertirlos a tipos del dominio y viceversa.
+
+### Raíz de composición
+
+`internal/app/` construye la aplicación y conecta módulos, puertos y adaptadores concretos. Es el único componente que necesita conocer ambos lados de esas fronteras.
+
+La raíz de composición administra el ciclo de vida general de las dependencias, pero no contiene reglas del negocio.
+
+### Puntos de entrada
+
+`cmd/<executable>/` contiene los paquetes `main` de los binarios. Un punto de entrada prepara el proceso, delega la construcción a `internal/app` y ejecuta la interfaz correspondiente.
+
+Los puntos de entrada deben permanecer pequeños y no contener casos de uso ni integraciones concretas.
 
 ## 3. Regla de dependencias
 
-Fuera de la raíz de composición, las dependencias entre módulos propios apuntan hacia el núcleo. `internal/app` es la excepción deliberada porque debe conocer las implementaciones para conectarlas. En el diagrama, `A --> B` significa que **A conoce, importa o llama a B**:
+Fuera de la raíz de composición, las dependencias entre componentes propios apuntan hacia el núcleo. En el diagrama, `A --> B` significa que **A conoce, importa o llama a B**:
 
 ```mermaid
 flowchart LR
     subgraph EntryPoint["Punto de entrada"]
-        CMD["cmd/happy-memory"]
+        CMD["cmd/&lt;executable&gt;"]
     end
 
     subgraph Composition["Composición"]
@@ -34,262 +68,170 @@ flowchart LR
     end
 
     subgraph Adapters["Adaptadores"]
-        CLI["adapters/cli"]
-        SQLITE["adapters/sqlite"]
-        FUTURE["adapters/http o mcp<br/>futuros"]
+        IN["adaptador de entrada"]
+        OUT["adaptador de salida"]
     end
 
     subgraph Core["Núcleo"]
-        MEMORY["internal/memory<br/>entidades, casos de uso<br/>y puerto Repository"]
-        PROJECT["internal/project<br/>identidad del repositorio"]
+        DOMAIN["internal/&lt;domain&gt;<br/>reglas, casos de uso y puertos"]
     end
 
-    subgraph Technology["Tecnología externa"]
-        DB["GORM + SQLite"]
+    subgraph External["Recursos externos"]
+        RESOURCE["framework, servicio o almacenamiento"]
     end
 
     CMD -->|inicia| APP
-    APP -->|ensambla| CLI
-    APP -->|ensambla| SQLITE
-    APP -->|construye servicios| MEMORY
-    APP -->|resuelve el proyecto| PROJECT
-    CLI -->|invoca casos de uso| MEMORY
-    FUTURE -.->|invocarán los mismos casos de uso| MEMORY
-    SQLITE -->|implementa memory.Repository| MEMORY
-    SQLITE -->|usa| DB
+    APP -->|ensambla| IN
+    APP -->|ensambla| OUT
+    APP -->|construye| DOMAIN
+    IN -->|invoca casos de uso| DOMAIN
+    OUT -->|implementa un puerto| DOMAIN
+    OUT -->|usa| RESOURCE
 ```
 
-La flecha `SQLITE --> MEMORY` puede parecer contraintuitiva: existe porque `memory` define el contrato `Repository` que necesita y SQLite lo implementa. El núcleo no importa al adaptador SQLite. Esta inversión permite sustituir la persistencia sin cambiar los casos de uso.
+Reglas:
 
-Reglas obligatorias:
+1. Los módulos de dominio no importan adaptadores, puntos de entrada ni la raíz de composición.
+2. Un adaptador de entrada invoca al núcleo; un adaptador de salida implementa un puerto definido por el núcleo.
+3. Los tipos de tecnologías externas no atraviesan los contratos del dominio.
+4. `internal/app` es la excepción deliberada a la dirección de dependencias porque ensambla implementaciones concretas.
+5. Las dependencias entre módulos de dominio deben ser explícitas, unidireccionales y libres de ciclos.
 
-1. `internal/memory` y `internal/project` no importan paquetes de `internal/adapters` ni `internal/app`.
-2. El núcleo no expone tipos de Cobra, GORM o SQLite.
-3. Los adaptadores convierten sus representaciones externas a tipos del núcleo y viceversa.
-4. `internal/app` es la raíz de composición: conoce las implementaciones concretas y las conecta.
-5. `cmd/*` contiene puntos de entrada pequeños; no contiene reglas de negocio ni consultas a la base de datos.
-6. Las interfaces se declaran cerca del código que las consume. Por ejemplo, `memory.Repository` pertenece al módulo `memory`, aunque SQLite proporcione su implementación.
+## 4. Jerarquía de paquetes y archivos
 
-## 4. Estructura inicial de archivos
+La estructura de referencia es:
 
 ```text
-happy-memory/
-├── cmd/
-│   └── happy-memory/
-│       └── main.go
-├── internal/
-│   ├── app/
-│   │   ├── app.go
-│   │   └── config.go
-│   ├── memory/
-│   │   ├── memory.go
-│   │   ├── repository.go
-│   │   ├── service.go
-│   │   └── errors.go
-│   ├── project/
-│   │   ├── project.go
-│   │   └── resolver.go
-│   └── adapters/
-│       ├── cli/
-│       │   ├── root.go
-│       │   ├── memory_commands.go
-│       │   └── output.go
-│       └── sqlite/
-│           ├── database.go
-│           ├── migrations.go
-│           ├── models.go
-│           └── memory_repository.go
-├── docs/
-│   └── architecture.md
-├── go.mod
-├── go.sum
-└── Makefile
+cmd/
+└── <executable>/
+    └── main.go
+
+internal/
+├── app/
+│   ├── app.go
+│   └── config.go
+│
+├── <domain>/
+│   ├── <domain>.go
+│   ├── service.go
+│   ├── repository.go
+│   └── errors.go
+│
+└── adapters/
+    ├── <input>/
+    │   └── <domain>_commands.go
+    └── <technology>/
+        └── <domain>_repository.go
 ```
 
-La estructura es un punto de partida, no una obligación de crear todos los archivos vacíos.
+Esta estructura expresa responsabilidades posibles, no un conjunto obligatorio de archivos.
 
-### Paquetes y archivos
+### Los archivos representan responsabilidades
 
-En Go, la carpeta define el paquete y constituye el límite arquitectónico. Los archivos dentro de esa carpeta son una herramienta para organizar las responsabilidades internas del paquete; no representan capas obligatorias ni unidades desplegables distintas.
+En Go, la carpeta define el paquete y constituye el límite arquitectónico. Los archivos dentro de esa carpeta organizan las responsabilidades internas del paquete; no representan capas obligatorias ni unidades desplegables distintas.
 
-Por ejemplo, `internal/memory` es el módulo de dominio y todos sus archivos declaran `package memory`. `memory.go` contiene la entidad principal porque ese nombre expresa mejor el concepto que un nombre genérico como `entity.go`. `service.go`, `repository.go` y `errors.go` solo deben existir cuando esas responsabilidades tengan implementación concreta.
+Un módulo pequeño puede comenzar con uno o dos archivos. Archivos como `service.go`, `repository.go` o `errors.go` solo se crean cuando esas responsabilidades existen.
 
-Un módulo pequeño puede comenzar así:
-
-```text
-internal/memory/
-├── memory.go
-├── service.go
-└── repository.go
-```
-
-Si los casos de uso crecen, se pueden separar en archivos sin crear nuevos subpaquetes:
+Cuando un archivo crece, primero se divide por responsabilidad sin cambiar de paquete:
 
 ```text
-internal/memory/
-├── memory.go
+internal/<domain>/
+├── <domain>.go
 ├── create.go
 ├── get.go
 ├── list.go
-├── search.go
-├── delete.go
 ├── repository.go
 └── errors.go
 ```
 
-Todos estos archivos continúan formando un único paquete `memory`. Solo se introducen subpaquetes como `memory/usecases` cuando el tamaño y la complejidad justifican un nuevo límite interno. No se replica automáticamente una jerarquía `domain/`, `usecases/` e `infrastructure/` dentro de cada módulo.
+Todos los archivos continúan declarando el mismo paquete. Solo se introduce un subpaquete cuando aparece un límite interno estable, con una API clara y suficiente complejidad para justificarlo.
 
-La regla práctica es: **módulos por capacidad del negocio, archivos por responsabilidad y subpaquetes solo ante complejidad real**. Un archivo se separa cuando su responsabilidad ya existe y la separación mejora su comprensión o prueba.
+La regla práctica es: **módulos por capacidad del negocio, archivos por responsabilidad y subpaquetes solo ante complejidad real**.
 
-### `cmd/`
+### Organización de adaptadores
 
-Es la convención de Go para contener ejecutables. Cada subdirectorio es un posible binario y contiene un paquete `main`.
+Los adaptadores se organizan primero por la interfaz o tecnología que encapsulan. Sus archivos pueden separarse por el módulo al que sirven:
 
-`cmd/happy-memory/main.go` solo debe preparar el contexto del proceso, invocar la composición de la aplicación, ejecutar el CLI y traducir el resultado a una salida del proceso. Una futura interfaz podría añadir `cmd/happy-memory-api` o `cmd/happy-memory-mcp` si necesita un proceso independiente.
+```text
+internal/adapters/<technology>/
+├── <domain-a>_repository.go
+└── <domain-b>_repository.go
+```
 
-### `internal/`
+Si un adaptador crece demasiado, puede incorporar subpaquetes por dominio:
 
-Contiene la implementación privada del módulo. Go impide que otros módulos importen estos paquetes. Esto evita convertir accidentalmente detalles internos en una API pública.
+```text
+internal/adapters/<technology>/
+├── <domain-a>/
+│   └── repository.go
+└── <domain-b>/
+    └── repository.go
+```
 
-No se usa una carpeta `src/`: con Go Modules, la raíz que contiene `go.mod` ya es la raíz del código fuente y `src/` no añade ninguna restricción o semántica.
-
-### `internal/app/`
-
-Es la raíz de composición y controla el ciclo de vida de la aplicación:
-
-- carga y valida configuración;
-- resuelve el proyecto actual;
-- abre y cierra la base de datos;
-- ejecuta migraciones;
-- construye repositorios, servicios y adaptadores;
-- propaga cancelación y errores hacia el punto de entrada.
-
-No contiene reglas sobre memorias ni consultas SQL.
-
-### `internal/memory/`
-
-Es el módulo central de memoria:
-
-- define la entidad `Memory` y sus invariantes;
-- expresa los casos de uso iniciales;
-- define el puerto `Repository` requerido para persistir y buscar;
-- define errores de negocio independientes del transporte.
-
-Inicialmente, los casos de uso pueden agruparse en un único `Service`. Solo se dividirán en comandos o handlers individuales si el módulo crece y las operaciones adquieren dependencias o reglas claramente distintas.
-
-### `internal/project/`
-
-Representa la identidad del repositorio al que pertenece una memoria. Su `Resolver` obtiene un `project_id` estable y garantiza que el repositorio principal y sus worktrees produzcan la misma identidad.
-
-El algoritmo de resolución y la interacción con Git quedan encapsulados aquí. Ni el CLI ni el repositorio SQLite deben calcular la identidad del proyecto. El almacenamiento recibe un `project_id` ya resuelto.
-
-### `internal/adapters/cli/`
-
-Traduce argumentos, flags, entrada estándar y señales del proceso a llamadas de casos de uso. También presenta resultados y convierte errores conocidos en mensajes y códigos de salida apropiados.
-
-Los comandos de Cobra no acceden directamente a GORM ni construyen consultas SQL. El adaptador puede depender de interfaces pequeñas definidas desde la perspectiva del propio CLI cuando eso facilite pruebas.
-
-### `internal/adapters/sqlite/`
-
-Implementa los puertos de persistencia mediante GORM y SQLite. Es el único lugar que conoce modelos con etiquetas de GORM, detalles de tablas, índices, consultas de texto completo y configuración específica del motor.
-
-Los modelos persistentes y las entidades del dominio se mantienen separados cuando su estructura o ciclo de vida difieren. El adaptador realiza el mapeo entre ambos; no se agregan etiquetas de GORM a `memory.Memory` por conveniencia.
+Esta subdivisión responde al tamaño y cohesión reales; no se crea preventivamente para cada combinación de dominio y adaptador.
 
 ## 5. Límites y contratos
 
-El puerto de persistencia expresa lo que necesita el caso de uso, no todas las capacidades de GORM. Conceptualmente debe soportar las operaciones iniciales de creación, obtención, listado, búsqueda y eliminación dentro de un proyecto.
+Un contrato debe expresar lo que necesita su consumidor, no toda la API de la tecnología que lo implementa.
 
-Todos los métodos que puedan realizar I/O reciben `context.Context`. El `project_id` forma parte explícita de las consultas para impedir lecturas o escrituras cruzadas entre proyectos.
+- Las interfaces se declaran cerca del consumidor.
+- Los métodos que realizan I/O reciben `context.Context`.
+- Los filtros, opciones y resultados utilizan tipos propios del núcleo.
+- Los contratos no reciben conexiones, consultas, requests ni modelos pertenecientes a un framework.
+- Los adaptadores traducen entre representaciones externas y tipos del dominio.
+- Los errores del núcleo expresan situaciones del negocio; cada adaptador decide cómo representarlos en su protocolo.
+- Una abstracción transversal se introduce cuando existe un caso de uso concreto que la necesita, no para anticipar posibilidades.
 
-Las opciones de listado y búsqueda se representan mediante tipos propios, por ejemplo filtros, paginación y ordenamiento. No se pasan objetos `*gorm.DB`, fragmentos SQL ni tipos de Cobra a través del contrato.
+Un repositorio debe utilizar el lenguaje de su módulo y exponer las operaciones requeridas por sus casos de uso. Se evita un repositorio CRUD genérico compartido por todos los dominios.
 
-No se introduce inicialmente un puerto genérico de transacciones. Cuando aparezca un caso de uso con varias escrituras que deban ser atómicas, se añadirá una abstracción de unidad de trabajo ajustada a ese caso concreto.
+## 6. Cómo agregar un módulo de dominio
 
-## 6. Flujo de una operación
+1. **Definir la capacidad:** escoger un nombre basado en el lenguaje del negocio y establecer qué responsabilidad pertenece al módulo.
+2. **Crear el paquete mínimo:** añadir `internal/<domain>/` únicamente con los archivos necesarios para el primer comportamiento.
+3. **Modelar las reglas:** colocar tipos, invariantes y errores propios dentro del módulo.
+4. **Agregar el caso de uso:** incorporar la coordinación en `service.go` o en un archivo nombrado por la operación.
+5. **Definir los puertos necesarios:** declarar dentro del módulo las interfaces requeridas para comunicarse con recursos externos.
+6. **Implementar adaptadores:** añadir las implementaciones en `internal/adapters/<adapter>/`, sin introducir la tecnología en el dominio.
+7. **Ensamblar el módulo:** conectar implementaciones y casos de uso desde `internal/app`.
+8. **Exponerlo cuando sea necesario:** agregar comandos, handlers u otra entrada dentro del adaptador correspondiente.
 
-Una operación del CLI sigue este flujo:
+Antes de crear un nuevo módulo se debe confirmar que representa una capacidad cohesionada. Una variación técnica o una operación aislada normalmente pertenece a un módulo existente.
 
-```text
-Usuario
-  -> comando Cobra
-  -> adaptador CLI valida y normaliza entrada
-  -> servicio de memoria aplica reglas del caso de uso
-  -> puerto memory.Repository
-  -> adaptador SQLite ejecuta GORM/SQL
-  -> servicio devuelve un resultado o error del núcleo
-  -> CLI lo presenta y selecciona el código de salida
-```
+## 7. Cómo agregar un adaptador
 
-Una futura API HTTP o interfaz MCP reemplaza únicamente el primer y último tramo. Reutiliza los mismos servicios y puertos.
+1. Determinar si es de entrada o de salida.
+2. Crear o reutilizar `internal/adapters/<adapter>/`.
+3. Mantener dentro del adaptador los tipos y detalles propios de la tecnología.
+4. Para una entrada, traducir solicitudes y respuestas alrededor de los casos de uso existentes.
+5. Para una salida, implementar un puerto definido por el módulo consumidor.
+6. Registrar la implementación concreta en `internal/app`.
 
-## 7. Persistencia y búsqueda
+Agregar un adaptador no debe exigir modificar las reglas del dominio. Si el contrato actual no cubre una necesidad real, se amplía desde el lenguaje del consumidor, no copiando la API de la tecnología.
 
-SQLite es un detalle del adaptador. La base de datos debe vivir en una ubicación compartida por los worktrees, no dentro del directorio particular de uno de ellos. Las filas se particionan lógicamente mediante `project_id` y los índices deben comenzar por esa columna cuando el patrón de consulta lo requiera.
+## 8. Guía para ubicar código
 
-La búsqueda de texto completo se implementa en el adaptador SQLite usando las capacidades FTS de SQLite. El servicio expresa una búsqueda textual sin conocer tablas virtuales, triggers ni sintaxis SQL.
+| Responsabilidad | Ubicación |
+| --- | --- |
+| Tipo, regla o invariante del negocio | `internal/<domain>/` |
+| Coordinación de un caso de uso | `internal/<domain>/service.go` o un archivo por operación |
+| Interfaz requerida por un caso de uso | `internal/<domain>/<port>.go` |
+| Implementación de una tecnología externa | `internal/adapters/<technology>/` |
+| Comando, handler o traducción de protocolo | `internal/adapters/<input>/` |
+| Construcción y conexión de dependencias | `internal/app/` |
+| Arranque de un proceso | `cmd/<executable>/main.go` |
 
-Las migraciones son explícitas, versionadas y ejecutadas durante el arranque bajo control de `internal/app`. GORM puede participar en operaciones de esquema sencillas, pero no se depende exclusivamente de `AutoMigrate`, porque FTS, triggers y futuras transformaciones de datos requieren SQL y versiones controladas.
+Si una responsabilidad parece encajar en varios lugares, se coloca junto a las reglas que provocarían su cambio. Las reglas del negocio permanecen en el dominio; los cambios motivados por una tecnología permanecen en su adaptador.
 
-La configuración de conexión, las opciones de concurrencia y los pragmas de SQLite se centralizan en `database.go`. No deben repetirse en repositorios individuales.
+## 9. Directrices de mantenimiento
 
-## 8. Errores, salida y observabilidad
-
-El núcleo define errores que expresan situaciones del producto, como memoria inexistente, entrada inválida o conflicto. Conserva la causa técnica cuando sea útil, pero no redacta mensajes de consola ni códigos HTTP.
-
-Cada adaptador traduce esos errores a su protocolo:
-
-- CLI: mensaje para `stderr` y código de salida;
-- HTTP futuro: estado y cuerpo de respuesta;
-- MCP futuro: error de herramienta o resultado estructurado.
-
-Los errores inesperados conservan contexto mediante wrapping. Los mensajes y logs no deben incluir el contenido completo de una memoria de forma predeterminada, ya que puede contener datos sensibles.
-
-La salida funcional del CLI se mantiene separada de los logs diagnósticos. Esto permitirá ofrecer formatos estables, como JSON, sin mezclar información de depuración.
-
-## 9. Estrategia de pruebas
-
-La pirámide inicial de pruebas será:
-
-1. **Pruebas unitarias del núcleo:** servicios de `memory` con un repositorio falso o stub, cubriendo reglas, filtros y errores.
-2. **Pruebas de integración SQLite:** repositorio real contra una base temporal, ejecutando las migraciones reales y verificando aislamiento por `project_id` y búsqueda FTS.
-3. **Pruebas del adaptador CLI:** comandos con dependencias inyectadas y buffers para `stdin`, `stdout` y `stderr`, sin abrir una base real salvo en pruebas de integración.
-4. **Pruebas de extremo a extremo mínimas:** compilar o ejecutar el binario contra un entorno temporal para validar composición, migraciones y códigos de salida.
-
-Las pruebas del núcleo no importan Cobra ni GORM. Las pruebas de persistencia comprueban comportamiento observable y no la cadena exacta de SQL generada por GORM.
-
-## 10. Evolución prevista
-
-### Nuevas interfaces
-
-HTTP y MCP se añaden como adaptadores hermanos de `cli`. Si necesitan procesos separados, se agregan nuevos puntos de entrada en `cmd/`. No deben crear servicios de negocio paralelos.
-
-### Snapshots y versionado
-
-El versionado es una iteración posterior. Cuando se definan su granularidad, restauración y retención, se decidirá si forma parte de `memory` o merece un módulo propio. La implementación deberá reutilizar la raíz de composición y los límites de persistencia existentes.
-
-### API pública para Go
-
-Los paquetes bajo `internal/` no son importables desde otros módulos. Si en el futuro se decide publicar una librería Go, se diseñará deliberadamente un paquete público fuera de `internal/` que exponga una API estable y delegue en la implementación privada. Las futuras interfaces HTTP o MCP no obligan por sí mismas a publicar una librería Go.
-
-## 11. Decisiones que se deben evitar
-
-- Colocar reglas de negocio dentro de comandos Cobra, callbacks de GORM o modelos de persistencia.
-- Importar GORM desde `internal/memory` o `internal/project`.
-- Usar un repositorio genérico CRUD que borre el lenguaje específico del dominio.
-- Crear interfaces para cada struct sin una frontera o consumidor real.
-- Calcular el `project_id` de formas distintas en cada interfaz.
-- Usar la ruta del worktree como identidad del proyecto.
-- Exponer entidades del dominio como contratos HTTP/MCP sin modelos de entrada y salida propios.
-- Introducir una carpeta `src/` sin una necesidad externa concreta.
-- Diseñar snapshots antes de precisar sus reglas funcionales.
-
-## 12. Criterios para mantener la arquitectura
-
-Una modificación respeta estos lineamientos cuando:
-
-- un caso de uso puede ejecutarse sin Cobra y probarse sin SQLite;
-- cambiar la presentación del CLI no exige cambiar reglas de memoria;
-- cambiar una tabla o consulta no altera el contrato externo del servicio;
-- todos los worktrees de un repositorio acceden al mismo `project_id`;
-- añadir un adaptador HTTP o MCP reutiliza el núcleo existente;
-- las dependencias tecnológicas permanecen en los puntos de entrada o adaptadores correspondientes.
+- Organizar el núcleo por capacidades del negocio, no mediante paquetes globales como `services`, `models` o `repositories`.
+- Mantener los módulos de dominio independientes de frameworks y tecnologías externas.
+- Declarar los puertos desde la perspectiva del módulo que los consume.
+- Mantener la lógica de negocio fuera de adaptadores, composición y puntos de entrada.
+- Preferir paquetes planos y dividir primero por archivos.
+- Crear subpaquetes únicamente cuando exista un límite interno claro.
+- Evitar ciclos entre módulos y dependencias implícitas mediante estado global.
+- Evitar interfaces especulativas o creadas automáticamente para cada struct.
+- Evitar repositorios CRUD genéricos que eliminen el vocabulario del dominio.
+- Mantener la conversión de modelos y protocolos dentro de los adaptadores.
+- Conectar todas las implementaciones concretas desde la raíz de composición.
