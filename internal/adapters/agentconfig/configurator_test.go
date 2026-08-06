@@ -2,11 +2,13 @@ package agentconfig
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	domain "github.com/jorgeluis594/happy-memory/internal/agentconfig"
 )
 
@@ -48,6 +50,25 @@ func TestConfigureCodexPreservesCommentsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestConfigureCodexAppendsAfterTrailingCommaComment(t *testing.T) {
+	configurator, home := testConfigurator(t)
+	path := filepath.Join(home, ".codex", "config.toml")
+	writeFixture(t, path, "[sandbox_workspace_write]\nwritable_roots = [\n  \"/existing\", # keep\n]\n")
+
+	result := configurator.Configure(context.Background(), domain.AgentCodex, "/repo/.happy-memory")
+	contents := readFixture(t, path)
+	if result.Status != domain.StatusConfigured {
+		t.Fatalf("result=%#v contents=%s", result, contents)
+	}
+	if !strings.Contains(contents, "# keep") || strings.Contains(contents, "# keep\n, ") {
+		t.Fatalf("contents=%s", contents)
+	}
+	var document map[string]any
+	if _, err := toml.Decode(contents, &document); err != nil {
+		t.Fatalf("invalid TOML: %v\ncontents=%s", err, contents)
+	}
+}
+
 func TestConfigureClaudeAndOpenCodePreserveJSONComments(t *testing.T) {
 	configurator, home := testConfigurator(t)
 	claudePath := filepath.Join(home, ".claude", "settings.json")
@@ -63,6 +84,33 @@ func TestConfigureClaudeAndOpenCodePreserveJSONComments(t *testing.T) {
 	contents := readFixture(t, openCodePath)
 	if result.Status != domain.StatusConfigured || !strings.Contains(contents, "// keep me") || !strings.Contains(contents, "external_directory") {
 		t.Fatalf("result=%#v contents=%s", result, contents)
+	}
+}
+
+func TestConfigureClaudeCreatesAdditionalDirectoriesArray(t *testing.T) {
+	configurator, home := testConfigurator(t)
+	path := filepath.Join(home, ".claude", "settings.json")
+
+	result := configurator.Configure(context.Background(), domain.AgentClaudeCode, "/repo/.happy-memory")
+	if result.Status != domain.StatusConfigured {
+		t.Fatalf("result=%#v", result)
+	}
+
+	var document struct {
+		Permissions struct {
+			AdditionalDirectories []string `json:"additionalDirectories"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(readFixture(t, path)), &document); err != nil {
+		t.Fatal(err)
+	}
+	if got := document.Permissions.AdditionalDirectories; len(got) != 1 || got[0] != "/repo/.happy-memory" {
+		t.Fatalf("additionalDirectories=%v", got)
+	}
+
+	result = configurator.Configure(context.Background(), domain.AgentClaudeCode, "/repo/.happy-memory")
+	if result.Status != domain.StatusAlreadyConfigured {
+		t.Fatalf("result=%#v", result)
 	}
 }
 

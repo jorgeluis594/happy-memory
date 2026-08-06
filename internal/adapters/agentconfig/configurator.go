@@ -215,13 +215,54 @@ func insertCodexRoot(contents []byte, path string) ([]byte, error) {
 	inside := strings.TrimSpace(text[arrayStart+1 : arrayEnd])
 	addition := quoted
 	if inside != "" {
-		if strings.HasSuffix(inside, ",") {
+		if hasTrailingTOMLComma(inside) {
 			addition = " " + addition
 		} else {
 			addition = ", " + addition
 		}
 	}
 	return []byte(text[:arrayEnd] + addition + text[arrayEnd:]), nil
+}
+
+func hasTrailingTOMLComma(text string) bool {
+	var last byte
+	quote, escaped, comment := byte(0), false, false
+	for index := 0; index < len(text); index++ {
+		character := text[index]
+		if comment {
+			if character == '\n' {
+				comment = false
+			}
+			continue
+		}
+		if quote != 0 {
+			if quote == '"' && escaped {
+				escaped = false
+				continue
+			}
+			if quote == '"' && character == '\\' {
+				escaped = true
+				continue
+			}
+			if character == quote {
+				quote = 0
+				last = character
+			}
+			continue
+		}
+		switch character {
+		case '#':
+			comment = true
+		case '\'', '"':
+			quote = character
+			last = character
+		default:
+			if !strings.ContainsRune(" \t\r\n", rune(character)) {
+				last = character
+			}
+		}
+	}
+	return last == ','
 }
 
 func findTOMLTable(text, name string) (int, int) {
@@ -369,12 +410,12 @@ func configureJSONPath(contents []byte, path []string, value any, appendArray bo
 	patchPath := path
 	patchValue := value
 	if missingAt >= 0 {
+		if appendArray {
+			patchValue = []any{value}
+		}
 		patchPath = path[:missingAt+1]
 		for index := len(path) - 1; index > missingAt; index-- {
 			patchValue = map[string]any{path[index]: patchValue}
-		}
-		if appendArray && missingAt == len(path)-1 {
-			patchValue = []any{value}
 		}
 	} else if appendArray {
 		patchPath = append(append([]string{}, path...), "-")
