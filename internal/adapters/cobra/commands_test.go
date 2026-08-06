@@ -235,3 +235,15 @@ func TestExecuteExactJSONAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionUsesDevelopmentMetadata(t *testing.T) {
+	t.Parallel()
+	output, err := Execute(context.Background(), []string{"version"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"ok\":true,\"data\":{\"version\":\"dev\",\"commit\":\"unknown\",\"build_date\":\"unknown\"}}\n"
+	if string(output) != want {
+		t.Fatalf("output = %q, want %q", output, want)
+	}
+}

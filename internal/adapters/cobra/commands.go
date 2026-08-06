@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/jorgeluis594/happy-memory/internal/buildinfo"
 	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
@@ -74,6 +75,12 @@ func execute(ctx context.Context, args []string, input io.Reader, service projec
 	root.SetHelpFunc(func(*spf13cobra.Command, []string) {})
 	root.SetUsageFunc(func(*spf13cobra.Command) error { return errors.New("invalid input") })
 	root.SetHelpCommand(&spf13cobra.Command{Use: "help", Args: invalidArgs, RunE: invalidCommand})
+	root.AddCommand(&spf13cobra.Command{Use: "version", Args: invalidArgs, RunE: func(*spf13cobra.Command, []string) error {
+		return writeJSON(&output, struct {
+			OK   bool           `json:"ok"`
+			Data buildinfo.Info `json:"data"`
+		}{OK: true, Data: buildinfo.Current()})
+	}})
 
 	if service != nil {
 		var name string

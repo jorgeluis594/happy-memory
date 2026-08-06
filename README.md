@@ -33,6 +33,76 @@ ranking. When omitted, the stored role is `unknown`.
 Semantic interpretation remains outside the CLI. `happy-memory` does not use
 embeddings, infer search intent, or decide which memories an agent should keep.
 
+## Installation
+
+> **Release status:** the commands below will work after the first GitHub
+> Release is published. The release pipeline is currently ready for snapshot
+> validation, but no public version has been tagged yet.
+
+On Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jorgeluis594/happy-memory/main/install.sh | sh
+```
+
+On Windows with Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+irm https://raw.githubusercontent.com/jorgeluis594/happy-memory/main/install.ps1 | iex
+```
+
+The installers select the latest stable release, verify its SHA-256 checksum,
+validate the executable, and preserve an existing installation if an update
+fails. They do not use `sudo` or require administrator privileges.
+
+To download and review the script before running it:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/jorgeluis594/happy-memory/main/install.sh
+less install.sh
+sh install.sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/jorgeluis594/happy-memory/main/install.ps1 -OutFile install.ps1
+Get-Content .\install.ps1
+.\install.ps1
+```
+
+Install an explicit version or choose another directory:
+
+```sh
+sh install.sh --version v0.1.0 --bin-dir "$HOME/bin"
+```
+
+```powershell
+.\install.ps1 -Version v0.1.0 -BinDir "$HOME\bin"
+```
+
+Unix installations default to `~/.local/bin`; add it to `PATH` if the installer
+prints that guidance. Windows installations default to
+`%LOCALAPPDATA%\Programs\happy-memory\bin`, which the installer adds once to the
+user-level `PATH`.
+
+### Supported binaries and manual installation
+
+Releases provide standalone binaries for Linux, macOS, and Windows on `amd64`
+and `arm64`. Download the archive matching your platform from GitHub Releases,
+download `checksums.txt` from the same release, verify the archive's SHA-256,
+and extract its sole `happy-memory` or `happy-memory.exe` file into a directory
+on `PATH`. No Go or SQLite installation is required.
+
+Confirm any installation with:
+
+```sh
+happy-memory version
+```
+
+To uninstall on Unix, remove `~/.local/bin/happy-memory` (or the custom target).
+On Windows, remove `happy-memory.exe`, remove its bin directory from the user
+`PATH` if desired, and delete an empty installation directory. Uninstallation
+does not remove repository `.happy-memory` data.
+
 ## Agent integration
 
 Agents normally interact with the store through repository skills rather than
@@ -85,6 +155,21 @@ check` additionally verifies formatting, linting, known vulnerabilities,
 module checksums, and the CLI build.
 
 The Makefile also exposes focused targets through `make help`.
+
+Release work can be checked locally with:
+
+```bash
+make release-check
+make release-snapshot
+make release-validate
+make installers-test
+```
+
+These developer targets require GoReleaser v2 and standard archive/checksum
+utilities. GitHub Actions runs this release workflow only for pushed tags. Tags
+matching `vMAJOR.MINOR.PATCH` run native smoke tests and `make check`, then
+publish only when no release already exists for that tag. Other `v*` tags are
+rejected before publication.
 
 ## Documentation
 

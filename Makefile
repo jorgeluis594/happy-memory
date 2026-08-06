@@ -4,7 +4,7 @@ GO ?= go
 LINT := $(GO) tool golangci-lint
 VULNCHECK := $(GO) tool govulncheck
 
-.PHONY: help fmt fmt-check lint test vuln verify build tidy check
+.PHONY: help fmt fmt-check lint test vuln verify build tidy check release-check release-snapshot release-validate installers-test
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -34,3 +34,15 @@ tidy: ## Synchronize module files with source imports.
 	$(GO) mod tidy
 
 check: fmt-check lint test vuln verify build ## Run all non-mutating quality checks.
+
+release-check: ## Validate the GoReleaser configuration.
+	goreleaser check
+
+release-snapshot: ## Build a local release snapshot without publishing.
+	goreleaser release --snapshot --clean
+
+release-validate: ## Inspect snapshot names, formats, contents, and checksums.
+	sh scripts/validate-release.sh dist
+
+installers-test: ## Test installers against controlled local release fixtures.
+	sh scripts/test-installers.sh

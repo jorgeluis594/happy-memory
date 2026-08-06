@@ -166,6 +166,22 @@ func TestNormalCommandWithoutDatabaseDoesNotCreateIt(t *testing.T) {
 	}
 }
 
+func TestVersionWorksOutsideRepositoryAndCreatesNothing(t *testing.T) {
+	directory := t.TempDir()
+	chdir(t, directory)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version code=%d stderr=%s", code, stderr.String())
+	}
+	want := "{\"ok\":true,\"data\":{\"version\":\"dev\",\"commit\":\"unknown\",\"build_date\":\"unknown\"}}\n"
+	if stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(directory, ".happy-memory")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("version created storage: %v", err)
+	}
+}
+
 func TestInvalidInputDoesNotCreateDatabase(t *testing.T) {
 	repository := initRepository(t)
 	chdir(t, repository)

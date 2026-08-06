@@ -2,6 +2,7 @@
 /happy-memory
 /bin/
 /coverage.out
+/dist/
 
 # Editor and environment files
 .DS_Store

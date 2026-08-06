@@ -1,0 +1,50 @@
+version: 2
+
+project_name: happy-memory
+
+builds:
+  - id: happy-memory
+    main: ./cmd/happy-memory
+    binary: happy-memory
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/jorgeluis594/happy-memory/internal/buildinfo.version={{ .Version }}
+        -X github.com/jorgeluis594/happy-memory/internal/buildinfo.commit={{ .Commit }}
+        -X github.com/jorgeluis594/happy-memory/internal/buildinfo.buildDate={{ .Date }}
+
+archives:
+  - id: happy-memory
+    ids:
+      - happy-memory
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - none*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+
+release:
+  prerelease: auto
