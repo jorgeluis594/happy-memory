@@ -10,7 +10,7 @@ import (
 
 func TestProjectRepositoryReconcilesAndOrders(t *testing.T) {
 	t.Parallel()
-	database, err := open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	database, err := OpenOrCreate(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,7 @@ Status: approved design pending written review
 
 ## 1. Purpose
 
-`happy-memory` is a local CLI for persisting and retrieving memories used by AI agents working in Git repositories. The CLI is the deterministic intermediary between its consumers and a single SQLite database shared by all of the user's projects.
+`happy-memory` is a local CLI for persisting and retrieving memories used by AI agents working in Git repositories. The CLI is the deterministic intermediary between its consumers and the SQLite database local to the current repository and shared by its linked worktrees.
 
 Semantic interpretation remains outside the CLI. The consumer decides what to search for, create, edit, or delete. The CLI is responsible for:
 
@@ -23,7 +23,7 @@ This specification describes the product, its contracts, and its data model. Rep
 
 The POC includes:
 
-- One global SQLite database for all projects.
+- One SQLite database beside each repository's Git common directory, shared by its linked worktrees.
 - Strict logical isolation by `project_id`.
 - Git repository initialization.
 - Atomic, typed memories.
@@ -52,7 +52,7 @@ The following are outside the POC:
 - Structured evidence or sources for memories.
 - `archived` and `superseded` states.
 
-The database is stored outside repositories in the operating system's standard application data directory. The directory and database file must be created with permissions restricted to the current user. A repository stores only its identifier in local Git configuration.
+The database is stored at `dirname(git-common-dir)/.happy-memory/memory.db`. Its directory and file are created only by a valid `init`, with permissions restricted to the current user. Git configuration stores the project identifier, never a database path.
 
 ## 3. Project identity and isolation
 
@@ -81,7 +81,7 @@ During the POC:
 
 - Normal operations do not accept a `--project-id` flag.
 - A command executed outside an initialized repository fails with `PROJECT_NOT_INITIALIZED`.
-- Administrative commands such as `projects list` may run outside a repository.
+- `projects list` requires a Git repository and reads only its local database.
 
 ### 3.4 Initialization
 
@@ -95,9 +95,10 @@ happy-memory init [--name <name>]
 2. Resolve the repository's common configuration.
 3. Read the existing `project_id` or generate a new one.
 4. Persist the identifier in Git configuration.
-5. Create or reconcile the project record in SQLite.
+5. Create or reuse `.happy-memory/memory.db` beside the Git common directory.
 6. Verify and apply required migrations.
-7. Verify full-text index availability.
+7. Create or reconcile the project record in SQLite.
+8. Verify full-text index availability.
 
 If a `project_id` exists in Git but its SQLite record is missing, `init` recreates the record with the same identifier.
 

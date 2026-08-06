@@ -95,7 +95,7 @@ func assertFTSColumns(t *testing.T, db *sql.DB, want []string) {
 func TestOpenDoesNotRunMigrations(t *testing.T) {
 	t.Parallel()
 
-	database, err := open(context.Background(), filepath.Join(t.TempDir(), databaseFilename))
+	database, err := OpenOrCreate(context.Background(), filepath.Join(t.TempDir(), databaseFilename))
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}

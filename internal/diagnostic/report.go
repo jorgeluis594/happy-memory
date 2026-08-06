@@ -11,7 +11,7 @@ type Check struct {
 	Details map[string]any `json:"details"`
 }
 
-// Report describes the global database health at one path.
+// Report describes database health at one path.
 type Report struct {
 	Healthy      bool    `json:"healthy"`
 	DatabasePath string  `json:"database_path"`

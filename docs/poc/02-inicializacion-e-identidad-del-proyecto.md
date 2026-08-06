@@ -8,7 +8,7 @@ Dependencias: Tarea 01
 
 Las memorias deben pertenecer al repositorio desde el cual trabaja el agente, sin depender de rutas, ramas o remotos. La identidad se guarda en la configuración común de Git para que todos los worktrees vinculados compartan memoria, mientras que un clone independiente recibe otra identidad.
 
-Este incremento conecta un repositorio Git con el almacenamiento global ya preparado y permite inspeccionar el catálogo local de proyectos.
+Este incremento conecta un repositorio Git con su almacenamiento local compartido por worktrees y permite inspeccionar su catálogo.
 
 ## Resultado de producto
 
@@ -29,7 +29,7 @@ El usuario puede inicializar un repositorio, consultar su identidad estable y di
 - Comportamiento idempotente de `init`.
 - Recuperación del registro SQLite cuando Git conserva el `project_id` pero la fila de proyecto no existe.
 - `happy-memory project show` dentro del proyecto activo.
-- `happy-memory projects list`, incluso fuera de un repositorio.
+- `happy-memory projects list` dentro del repositorio actual.
 - Errores JSON estables cuando el repositorio no existe o aún no está inicializado.
 
 ### Fuera de alcance
@@ -51,7 +51,7 @@ El usuario puede inicializar un repositorio, consultar su identidad estable y di
 7. Mover el repositorio y volver a consultarlo conserva el `project_id`; la ruta conocida puede actualizarse solo como información.
 8. Si Git conserva el identificador pero falta el registro de SQLite, `init` recrea el registro con el mismo UUID.
 9. `project show` devuelve únicamente el proyecto resuelto desde el repositorio actual.
-10. `projects list` puede ejecutarse fuera de un repositorio y muestra cada proyecto global una sola vez.
+10. `projects list` requiere un repositorio y muestra únicamente los proyectos de su base local.
 11. Ejecutar `init` fuera de Git falla con una respuesta JSON y no crea un proyecto huérfano.
 12. Ejecutar una operación normal dentro de un repositorio no inicializado devuelve `PROJECT_NOT_INITIALIZED`.
 13. Ninguna operación normal expone un flag que permita seleccionar manualmente otro `project_id`.
@@ -62,7 +62,7 @@ El usuario puede inicializar un repositorio, consultar su identidad estable y di
 2. Crear un worktree vinculado y confirmar que `project show` devuelve la misma identidad.
 3. Mover el repositorio principal y confirmar que mantiene esa identidad.
 4. Crear un clone independiente, inicializarlo y confirmar que recibe otra identidad.
-5. Ejecutar `projects list` fuera de Git y comprobar que aparecen exactamente los dos proyectos.
+5. Ejecutar `projects list` en cada repositorio y comprobar que consulta únicamente su base local.
 6. Eliminar únicamente la fila SQLite del proyecto principal, volver a ejecutar `init` y confirmar que se reconcilia con el identificador conservado en Git.
 
 El escenario se aprueba cuando la identidad sigue las reglas de Git y no las rutas o remotos.

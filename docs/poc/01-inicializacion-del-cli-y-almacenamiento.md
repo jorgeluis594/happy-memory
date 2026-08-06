@@ -6,20 +6,20 @@ Dependencias: ninguna
 
 ## Contexto
 
-`happy-memory` necesita una única base SQLite global, ubicada fuera de los repositorios, antes de poder registrar proyectos o memorias. Una instalación nueva no debe exigir que el usuario cree archivos o ejecute SQL manualmente. Una instalación existente tampoco debe perder información cuando el binario vuelve a ejecutarse o incorpora una migración compatible.
+`happy-memory` necesita una base SQLite local por repositorio, ubicada en `dirname(git-common-dir)/.happy-memory/memory.db` y compartida por todos sus worktrees. Un `init` válido debe prepararla sin pasos manuales; los demás comandos nunca deben crear una base ausente.
 
-Este incremento entrega el bootstrap del producto. No es la inicialización de un repositorio Git y no introduce un comando público adicional: las operaciones que necesitan almacenamiento aseguran primero que este se encuentre listo.
+Este incremento entrega el bootstrap del producto como parte de `happy-memory init`.
 
 ## Resultado de producto
 
-Una instalación nueva de `happy-memory` puede crear y abrir automáticamente una base SQLite local, privada y vacía. El motor de migraciones queda preparado para los incrementos posteriores, sin ejecutarse todavía durante el bootstrap.
+Un repositorio puede crear y abrir de forma explícita una base SQLite privada; sus worktrees reutilizan el mismo archivo y los comandos normales exigen que ya exista.
 
 ## Alcance
 
 ### Incluye
 
-- Resolver el directorio estándar de datos de aplicaciones del sistema operativo para el usuario actual.
-- Crear el directorio y el archivo de base de datos cuando no existen.
+- Resolver el `git-common-dir` absoluto y derivar la ruta local de almacenamiento.
+- Crear el directorio y el archivo únicamente durante `init`.
 - Restringir el acceso al directorio y al archivo al usuario actual.
 - Abrir una única conexión `database/sql` y construir GORM sobre ella.
 - Habilitar claves foráneas, WAL y el tiempo de espera de contención requerido por el producto.
@@ -28,7 +28,7 @@ Una instalación nueva de `happy-memory` puede crear y abrir automáticamente un
 
 ### Fuera de alcance
 
-- Crear o identificar un proyecto Git.
+- Consultar o modificar la antigua base global.
 - Guardar un `project_id` en la configuración Git.
 - Crear memorias, etiquetas o revisiones.
 - Reparar automáticamente una base corrupta.
@@ -39,14 +39,14 @@ Una instalación nueva de `happy-memory` puede crear y abrir automáticamente un
 
 ## Criterios de aceptación de producto
 
-1. Abrir el almacenamiento en un entorno de usuario sin datos previos crea el directorio de aplicación y una base SQLite vacía sin pasos manuales.
+1. Ejecutar `init` en un repositorio sin datos previos crea `.happy-memory/memory.db` sin pasos manuales.
 2. El directorio y el archivo creados no conceden acceso a otros usuarios del sistema.
 3. Una segunda apertura conserva los datos existentes y no vuelve a crear ni reiniciar la base.
 4. La conexión tiene habilitadas las claves foráneas, WAL y un `busy_timeout` de 5000 ms.
 5. GORM y las consultas directas con `database/sql` comparten la misma conexión.
 6. La base recién creada no contiene tablas del dominio ni metadata de goose.
 7. El helper de goose aplica correctamente migraciones proporcionadas por el llamador, pero el bootstrap normal no lo ejecuta.
-8. La preparación del almacenamiento funciona sin depender del directorio de trabajo ni de que este pertenezca a un repositorio Git.
+8. Todos los worktrees vinculados abren el mismo archivo y un comando normal sin base devuelve `PROJECT_NOT_INITIALIZED` sin crear archivos.
 
 ## Escenario integral de validación
 

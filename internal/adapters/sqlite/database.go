@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	glebarezsqlite "github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -17,8 +16,8 @@ import (
 )
 
 const (
-	applicationDirectory = "happy-memory"
-	databaseFilename     = "happy-memory.db"
+	applicationDirectory = ".happy-memory"
+	databaseFilename     = "memory.db"
 )
 
 // Database owns the single database/sql connection pool used by both direct
@@ -29,32 +28,9 @@ type Database struct {
 	gorm *gorm.DB
 }
 
-// Open creates the application's private data directory and database file when
-// necessary, then opens the database with the required SQLite settings.
-func Open(ctx context.Context) (*Database, error) {
-	path, err := ResolvePath()
-	if err != nil {
-		return nil, fmt.Errorf("resolve SQLite database path: %w", err)
-	}
-
-	return open(ctx, path)
-}
-
-// ResolvePath returns the absolute path used by the global database.
-func ResolvePath() (string, error) {
-	return databasePath(runtime.GOOS, os.Getenv, os.UserHomeDir)
-}
-
-// OpenReadOnly opens an existing database without creating files or changing
-// its journal mode. It is intended for non-destructive diagnostics.
-func OpenReadOnly(ctx context.Context, path string) (*Database, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("stat SQLite database %q: %w", path, err)
-	}
-	return openDatabase(ctx, path, readOnlyDataSourceName(path))
-}
-
-func open(ctx context.Context, path string) (*Database, error) {
+// OpenOrCreate creates the private data directory and database file when
+// necessary, then opens it with the required SQLite settings.
+func OpenOrCreate(ctx context.Context, path string) (*Database, error) {
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create SQLite data directory %q: %w", directory, err)
@@ -71,6 +47,24 @@ func open(ctx context.Context, path string) (*Database, error) {
 	}
 
 	return openDatabase(ctx, path, dataSourceName(path))
+}
+
+// OpenExisting opens an existing database without creating its directory or
+// file. Callers can distinguish an absent store with errors.Is(os.ErrNotExist).
+func OpenExisting(ctx context.Context, path string) (*Database, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("stat SQLite database %q: %w", path, err)
+	}
+	return openDatabase(ctx, path, dataSourceName(path))
+}
+
+// OpenReadOnly opens an existing database without creating files or changing
+// its journal mode. It is intended for non-destructive diagnostics.
+func OpenReadOnly(ctx context.Context, path string) (*Database, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("stat SQLite database %q: %w", path, err)
+	}
+	return openDatabase(ctx, path, readOnlyDataSourceName(path))
 }
 
 func openDatabase(ctx context.Context, path, source string) (*Database, error) {

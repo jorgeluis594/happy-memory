@@ -7,7 +7,7 @@ type StoreChecker interface {
 	Check(context.Context, string) ([]Check, error)
 }
 
-// Service coordinates global storage diagnostics.
+// Service coordinates storage diagnostics for one resolved database path.
 type Service struct {
 	path    string
 	checker StoreChecker

@@ -6,7 +6,7 @@ Dependencias: tareas 01 a 07
 
 ## Contexto
 
-Cada incremento anterior es aprobable por separado, pero el POC solo está completo si las capacidades interactúan correctamente en el mismo almacenamiento global, a través de repositorios, clones y worktrees, y bajo errores reales. Esta tarea constituye la puerta final de aceptación del producto.
+Cada incremento anterior es aprobable por separado, pero el POC solo está completo si las capacidades interactúan correctamente en el almacenamiento local compartido por los worktrees de cada repositorio, a través de clones y bajo errores reales. Esta tarea constituye la puerta final de aceptación del producto.
 
 No agrega una capacidad nueva. Consolida un conjunto repetible de escenarios de producto, corrige cualquier desviación encontrada dentro del alcance aprobado y produce evidencia de que el POC satisface su especificación completa.
 

@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jorgeluis594/happy-memory/internal/project"
 )
 
 func TestDoctorMissingDatabaseWritesOneJSONErrorAndCreatesNothing(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	directory := t.TempDir()
+	chdir(t, directory)
 	var stdout, stderr bytes.Buffer
 	if code := RunWithInput(context.Background(), []string{"doctor"}, bytes.NewReader(nil), &stdout, &stderr); code == 0 {
 		t.Fatal("doctor exit code = 0")
@@ -36,10 +39,13 @@ func TestDoctorMissingDatabaseWritesOneJSONErrorAndCreatesNothing(t *testing.T) 
 	if payload.OK || payload.Error.Code != "STORE_ERROR" || payload.Error.Message != "storage diagnostics failed" {
 		t.Fatalf("payload=%#v", payload)
 	}
+	if payload.Error.Details["database_path"] != filepath.Join(".happy-memory", "memory.db") {
+		t.Fatalf("database_path=%v", payload.Error.Details["database_path"])
+	}
 	if err := decoder.Decode(&map[string]any{}); err == nil {
 		t.Fatal("more than one JSON document")
 	}
-	wantPath := filepath.Join(home, "Library", "Application Support", "happy-memory", "happy-memory.db")
+	wantPath := filepath.Join(directory, ".happy-memory", "memory.db")
 	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
 		t.Fatalf("database was created: %v", err)
 	}
@@ -53,7 +59,8 @@ func TestPublicBusyErrorIsStable(t *testing.T) {
 }
 
 func TestBatchIntegrationAllowsPartialSuccessAndPersistsSuccessfulItems(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	repository := initRepository(t)
+	chdir(t, repository)
 	run := func(args []string, input string) (int, string, string) {
 		var stdout, stderr bytes.Buffer
 		code := RunWithInput(context.Background(), args, bytes.NewBufferString(input), &stdout, &stderr)
@@ -119,6 +126,158 @@ func TestBatchIntegrationAllowsPartialSuccessAndPersistsSuccessfulItems(t *testi
 	}
 	if current.Data.Title != "updated" || current.Data.Version != 2 {
 		t.Fatalf("current=%s", stdout)
+	}
+}
+
+func TestInitCreatesRepositoryDatabaseAndReusesIt(t *testing.T) {
+	repository := initRepository(t)
+	chdir(t, repository)
+	run := func(args ...string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := Run(context.Background(), args, &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+	if code, _, stderr := run("init", "--name", "shared"); code != 0 {
+		t.Fatalf("first init code=%d stderr=%s", code, stderr)
+	}
+	path := filepath.Join(repository, ".happy-memory", "memory.db")
+	assertPermission(t, filepath.Dir(path), 0o700)
+	assertPermission(t, path, 0o600)
+	if code, _, stderr := run("init"); code != 0 {
+		t.Fatalf("second init code=%d stderr=%s", code, stderr)
+	}
+	if code, stdout, stderr := run("project", "show"); code != 0 || !strings.Contains(stdout, `"name":"shared"`) {
+		t.Fatalf("show code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestNormalCommandWithoutDatabaseDoesNotCreateIt(t *testing.T) {
+	repository := initRepository(t)
+	chdir(t, repository)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"projects", "list"}, &stdout, &stderr); code == 0 {
+		t.Fatal("projects list exit code = 0")
+	}
+	if !strings.Contains(stderr.String(), `"code":"PROJECT_NOT_INITIALIZED"`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(repository, ".happy-memory")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("storage directory was created: %v", err)
+	}
+}
+
+func TestInvalidInputDoesNotCreateDatabase(t *testing.T) {
+	repository := initRepository(t)
+	chdir(t, repository)
+	for _, args := range [][]string{{"init", "extra"}, {"init", "--unknown"}, {"init", "--name", " "}} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(), args, &stdout, &stderr); code == 0 {
+			t.Fatalf("Run(%v) exit code = 0", args)
+		}
+		if _, err := os.Stat(filepath.Join(repository, ".happy-memory")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Run(%v) created storage: %v", args, err)
+		}
+	}
+}
+
+func TestLinkedWorktreeSharesDatabase(t *testing.T) {
+	repository := initRepository(t)
+	worktree := filepath.Join(t.TempDir(), "linked")
+	runGit(t, repository, "worktree", "add", "-b", "linked-test", worktree)
+	chdir(t, worktree)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"init", "--name", "worktrees"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init code=%d stderr=%s", code, stderr.String())
+	}
+	wantPath := filepath.Join(repository, ".happy-memory", "memory.db")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("shared database: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".happy-memory")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree-local storage exists: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	input := bytes.NewBufferString(`{"type":"fact","title":"shared","content":"from worktree","importance":3,"confidence":4,"tags":[]}`)
+	if code := RunWithInput(context.Background(), []string{"create", "--input", "-"}, input, &stdout, &stderr); code != 0 {
+		t.Fatalf("create code=%d stderr=%s", code, stderr.String())
+	}
+	var created struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, repository)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"get", created.Data.ID}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"content":"from worktree"`) {
+		t.Fatalf("get code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitDoesNotTouchLegacyGlobalDatabase(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	legacy := filepath.Join(home, "Library", "Application Support", "happy-memory", "happy-memory.db")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy-marker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository := initRepository(t)
+	chdir(t, repository)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"init"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init code=%d stderr=%s", code, stderr.String())
+	}
+	contents, err := os.ReadFile(legacy)
+	if err != nil || string(contents) != "legacy-marker" {
+		t.Fatalf("legacy database changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func initRepository(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	runGit(t, directory, "init")
+	runGit(t, directory, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
+	return directory
+}
+
+func runGit(t *testing.T, directory string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+}
+
+func chdir(t *testing.T, directory string) {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chdir(directory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+}
+
+func assertPermission(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("mode %q = %04o, want %04o", path, got, want)
 	}
 }
 

@@ -6,7 +6,7 @@ Dependencias: tareas 01 a 06
 
 ## Contexto
 
-La base global concentra los proyectos y memorias del usuario. El producto debe identificar problemas de acceso, compatibilidad o indexación antes de que causen resultados silenciosamente incorrectos, y debe responder de forma predecible cuando dos procesos compiten por escribir.
+La base local concentra los proyectos y memorias de un repositorio y sus worktrees. El producto debe identificar problemas de acceso, compatibilidad o indexación antes de que causen resultados silenciosamente incorrectos, y debe responder de forma predecible cuando dos procesos compiten por escribir.
 
 Este incremento completa las garantías operativas del POC y proporciona un diagnóstico no destructivo del almacenamiento.
 
@@ -19,6 +19,7 @@ El usuario puede verificar la salud del almacenamiento y recibe errores JSON est
 ### Incluye
 
 - `happy-memory doctor`.
+- Resolución de la ruta principal dentro de Git y fallback relativo `.happy-memory/memory.db` fuera de Git, sin crear ni migrar.
 - Comprobación de acceso al archivo de base de datos.
 - Comprobación de compatibilidad de versión de esquema.
 - Verificación básica de integridad SQLite.

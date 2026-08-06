@@ -60,7 +60,7 @@ type GitIdentity interface {
 	InferName(context.Context, GitContext) (string, error)
 }
 
-// Repository persists the global project catalog.
+// Repository persists the project catalog in the current repository database.
 type Repository interface {
 	Find(context.Context, string) (*Project, error)
 	Reconcile(context.Context, string, string, string, time.Time) (Project, error)

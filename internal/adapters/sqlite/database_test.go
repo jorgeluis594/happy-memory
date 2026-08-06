@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -9,11 +10,11 @@ import (
 	"testing"
 )
 
-func TestOpenCreatesConfiguredEmptyDatabase(t *testing.T) {
+func TestOpenOrCreateCreatesConfiguredEmptyDatabase(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "data", databaseFilename)
-	database, err := open(context.Background(), path)
+	database, err := OpenOrCreate(context.Background(), path)
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -42,11 +43,11 @@ func TestOpenCreatesConfiguredEmptyDatabase(t *testing.T) {
 	assertPragma(t, database, "busy_timeout", 100)
 }
 
-func TestOpenReusesExistingDatabase(t *testing.T) {
+func TestOpenOrCreateReusesExistingDatabase(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "data", databaseFilename)
-	first, err := open(context.Background(), path)
+	first, err := OpenOrCreate(context.Background(), path)
 	if err != nil {
 		t.Fatalf("first open() error = %v", err)
 	}
@@ -59,7 +60,7 @@ func TestOpenReusesExistingDatabase(t *testing.T) {
 		t.Fatalf("first Close() error = %v", closeErr)
 	}
 
-	second, err := open(context.Background(), path)
+	second, err := OpenOrCreate(context.Background(), path)
 	if err != nil {
 		t.Fatalf("second open() error = %v", err)
 	}
@@ -77,7 +78,7 @@ func TestOpenReusesExistingDatabase(t *testing.T) {
 func TestGORMUsesSharedSQLConnection(t *testing.T) {
 	t.Parallel()
 
-	database, err := open(context.Background(), filepath.Join(t.TempDir(), databaseFilename))
+	database, err := OpenOrCreate(context.Background(), filepath.Join(t.TempDir(), databaseFilename))
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -93,6 +94,18 @@ func TestGORMUsesSharedSQLConnection(t *testing.T) {
 	}
 	if value != "visible" {
 		t.Errorf("GORM value = %q, want visible", value)
+	}
+}
+
+func TestOpenExistingDoesNotCreateMissingDatabase(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "missing", databaseFilename)
+	if _, err := OpenExisting(context.Background(), path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenExisting() error = %v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database directory was created: %v", err)
 	}
 }
 

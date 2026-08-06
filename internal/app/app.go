@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +46,170 @@ func (resolver currentProjectResolver) Current(ctx context.Context) (memory.Proj
 	return memory.ProjectContext{ID: current.ID, WorktreeRoot: gitContext.WorktreeRoot}, nil
 }
 
+// runtime defers all Git and SQLite work until a validated Cobra handler calls
+// a service method. This keeps invalid commands from creating local storage.
+type runtime struct {
+	git        *gitadapter.Adapter
+	migrations fs.FS
+	database   *sqlite.Database
+	projects   *project.Service
+	memories   *memory.Service
+	searches   *search.Service
+}
+
+func newRuntime(migrations fs.FS) *runtime {
+	return &runtime{git: gitadapter.New(), migrations: migrations}
+}
+
+func (r *runtime) open(ctx context.Context, create bool) error {
+	if r.database != nil {
+		return nil
+	}
+	gitContext, err := r.git.Resolve(ctx)
+	if err != nil {
+		return err
+	}
+	path := sqlite.PathFromGitCommonDir(gitContext.CommonDir)
+	if err = sqlite.ValidateExistingSchema(ctx, path, r.migrations); err != nil {
+		return storeError()
+	}
+	if create {
+		r.database, err = sqlite.OpenOrCreate(ctx, path)
+	} else {
+		r.database, err = sqlite.OpenExisting(ctx, path)
+		if errors.Is(err, os.ErrNotExist) {
+			return project.NewError(project.CodeProjectNotInitialized, errors.New("project is not initialized"))
+		}
+	}
+	if err != nil {
+		return storeError()
+	}
+	if err = sqlite.Migrate(ctx, r.database.SQL(), r.migrations); err != nil {
+		_ = r.database.Close()
+		r.database = nil
+		return storeError()
+	}
+	r.projects = project.NewService(r.git, sqlite.NewProjectRepository(r.database.GORM()), systemClock{}, uuidGenerator{})
+	resolver := currentProjectResolver{projects: r.projects, git: r.git}
+	r.memories = memory.NewService(resolver, sqlite.NewMemoryRepository(r.database.GORM()), systemClock{}, uuidGenerator{})
+	r.searches = search.NewService(resolver, sqlite.NewSearchRepository(r.database.GORM()))
+	return nil
+}
+
+func (r *runtime) Initialize(ctx context.Context, name *string) (project.Project, error) {
+	if name != nil && strings.TrimSpace(*name) == "" {
+		return project.Project{}, project.NewError(project.CodeValidationError, errors.New("invalid input"))
+	}
+	if err := r.open(ctx, true); err != nil {
+		return project.Project{}, err
+	}
+	return r.projects.Initialize(ctx, name)
+}
+
+func (r *runtime) ShowCurrent(ctx context.Context) (project.Project, error) {
+	if err := r.open(ctx, false); err != nil {
+		return project.Project{}, err
+	}
+	return r.projects.ShowCurrent(ctx)
+}
+
+func (r *runtime) List(ctx context.Context) ([]project.Project, error) {
+	if err := r.open(ctx, false); err != nil {
+		return nil, err
+	}
+	return r.projects.List(ctx)
+}
+
+func (r *runtime) Batch(ctx context.Context, operations []memory.BatchOperation) (memory.BatchResponse, error) {
+	if err := r.open(ctx, false); err != nil {
+		return memory.BatchResponse{}, err
+	}
+	return r.memories.Batch(ctx, operations)
+}
+
+func (r *runtime) Create(ctx context.Context, input memory.CreateInput) (memory.Memory, error) {
+	if err := r.open(ctx, false); err != nil {
+		return memory.Memory{}, err
+	}
+	return r.memories.Create(ctx, input)
+}
+
+func (r *runtime) Update(ctx context.Context, id string, expected int, input memory.UpdateInput) (memory.Memory, error) {
+	if err := r.open(ctx, false); err != nil {
+		return memory.Memory{}, err
+	}
+	return r.memories.Update(ctx, id, expected, input)
+}
+
+func (r *runtime) Delete(ctx context.Context, id string, expected int) (memory.Memory, error) {
+	if err := r.open(ctx, false); err != nil {
+		return memory.Memory{}, err
+	}
+	return r.memories.Delete(ctx, id, expected)
+}
+
+func (r *runtime) Restore(ctx context.Context, id string, version, expected int) (memory.Memory, error) {
+	if err := r.open(ctx, false); err != nil {
+		return memory.Memory{}, err
+	}
+	return r.memories.Restore(ctx, id, version, expected)
+}
+
+func (r *runtime) Get(ctx context.Context, id string, includeDeleted bool) (memory.Memory, error) {
+	if err := r.open(ctx, false); err != nil {
+		return memory.Memory{}, err
+	}
+	return r.memories.Get(ctx, id, includeDeleted)
+}
+
+func (r *runtime) ListMemories(ctx context.Context, filter memory.ListFilter) ([]memory.Memory, error) {
+	if err := r.open(ctx, false); err != nil {
+		return nil, err
+	}
+	return r.memories.List(ctx, filter)
+}
+
+func (r *runtime) History(ctx context.Context, id string) ([]memory.Revision, error) {
+	if err := r.open(ctx, false); err != nil {
+		return nil, err
+	}
+	return r.memories.History(ctx, id)
+}
+
+func (r *runtime) TagsList(ctx context.Context) ([]memory.Tag, error) {
+	if err := r.open(ctx, false); err != nil {
+		return nil, err
+	}
+	return r.memories.TagsList(ctx)
+}
+
+func (r *runtime) TagsSearch(ctx context.Context, query string) ([]memory.Tag, error) {
+	if err := r.open(ctx, false); err != nil {
+		return nil, err
+	}
+	return r.memories.TagsSearch(ctx, query)
+}
+
+func (r *runtime) Search(ctx context.Context, input search.Input) (search.Response, error) {
+	if err := r.open(ctx, false); err != nil {
+		return search.Response{}, err
+	}
+	return r.searches.Search(ctx, input)
+}
+
+func (r *runtime) Close() error {
+	if r.database == nil {
+		return nil
+	}
+	return r.database.Close()
+}
+
+type memoryRuntime struct{ *runtime }
+
+func (r memoryRuntime) List(ctx context.Context, filter memory.ListFilter) ([]memory.Memory, error) {
+	return r.ListMemories(ctx, filter)
+}
+
 // Run composes and executes one CLI invocation.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return RunWithInput(ctx, args, os.Stdin, stdout, stderr)
@@ -52,52 +217,43 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 // RunWithInput composes one invocation with an explicit stdin stream.
 func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	path, err := sqlite.ResolvePath()
+	migrations, err := fs.Sub(sqlite.EmbeddedMigrations, "migrations")
 	if err != nil {
-		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
-	}
-	migrations, subErr := fs.Sub(sqlite.EmbeddedMigrations, "migrations")
-	if subErr != nil {
-		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
+		return writeFailure(stderr, storeError())
 	}
 	if len(args) > 0 && args[0] == "doctor" {
+		path := sqlite.DiagnosticFallbackPath()
+		gitContext, resolveErr := gitadapter.New().Resolve(ctx)
+		if resolveErr == nil {
+			path = sqlite.PathFromGitCommonDir(gitContext.CommonDir)
+		}
 		diagnostics := diagnostic.NewService(path, sqlite.NewDiagnosticChecker(migrations))
 		response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, nil, nil, nil, diagnostics)
-		if executeErr != nil {
-			return writeFailure(stderr, executeErr)
+		return writeResult(stdout, stderr, response, executeErr, nil)
+	}
+	runtime := newRuntime(migrations)
+	response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, runtime, memoryRuntime{runtime}, runtime, nil)
+	return writeResult(stdout, stderr, response, executeErr, runtime.Close)
+}
+
+func writeResult(stdout, stderr io.Writer, response []byte, executeErr error, closeStore func() error) int {
+	if closeStore != nil {
+		closeErr := closeStore()
+		if executeErr == nil && closeErr != nil {
+			executeErr = storeError()
 		}
-		if _, err = stdout.Write(response); err != nil {
-			return 1
-		}
-		return 0
 	}
-	if err = sqlite.ValidateExistingSchema(ctx, path, migrations); err != nil {
-		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
-	}
-	database, err := sqlite.Open(ctx)
-	if err != nil {
-		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
-	}
-	if err := sqlite.Migrate(ctx, database.SQL(), migrations); err != nil {
-		_ = database.Close()
-		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
-	}
-	git := gitadapter.New()
-	projectService := project.NewService(git, sqlite.NewProjectRepository(database.GORM()), systemClock{}, uuidGenerator{})
-	memoryService := memory.NewService(currentProjectResolver{projects: projectService, git: git}, sqlite.NewMemoryRepository(database.GORM()), systemClock{}, uuidGenerator{})
-	searchService := search.NewService(currentProjectResolver{projects: projectService, git: git}, sqlite.NewSearchRepository(database.GORM()))
-	response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, projectService, memoryService, searchService, nil)
-	closeErr := database.Close()
 	if executeErr != nil {
 		return writeFailure(stderr, executeErr)
-	}
-	if closeErr != nil {
-		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
 	}
 	if _, err := stdout.Write(response); err != nil {
 		return 1
 	}
 	return 0
+}
+
+func storeError() error {
+	return project.NewError(project.CodeStoreError, errors.New("storage operation failed"))
 }
 
 func writeFailure(output io.Writer, err error) int {

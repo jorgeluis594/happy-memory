@@ -60,7 +60,7 @@ func ExecuteWithServices(ctx context.Context, args []string, input io.Reader, pr
 	return execute(ctx, args, input, projects, memories, searches, nil)
 }
 
-// ExecuteAll parses every command, including global diagnostics.
+// ExecuteAll parses every command, including storage diagnostics.
 func ExecuteAll(ctx context.Context, args []string, input io.Reader, projects projectService, memories memoryService, searches searchService, diagnostics diagnosticService) ([]byte, error) {
 	return execute(ctx, args, input, projects, memories, searches, diagnostics)
 }

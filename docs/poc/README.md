@@ -32,16 +32,16 @@ Una tarea se considera terminada cuando todos sus criterios y su escenario integ
 
 El plan separa explícitamente dos responsabilidades:
 
-1. **Inicialización del CLI:** crea y configura de manera segura la base SQLite global y vacía, y prepara el motor de migraciones sin ejecutar migraciones reales. No identifica todavía un repositorio.
-2. **Inicialización de un proyecto:** vincula el repositorio Git actual con un `project_id` y registra ese proyecto en la base ya preparada.
+1. **Inicialización del almacenamiento:** un `init` válido crea y configura de manera segura la base SQLite local del repositorio, compartida por sus worktrees.
+2. **Inicialización de un proyecto:** el mismo comando vincula el repositorio Git actual con un `project_id` y lo registra en esa base.
 
-La inicialización del almacenamiento es un bootstrap interno e idempotente que se ejecuta antes de cualquier operación que necesite la base. No se agrega un comando público distinto para esta acción dentro del POC.
+Los demás comandos solo abren una base existente y nunca crean almacenamiento implícitamente. No se agrega un comando público distinto para el bootstrap.
 
 ## Secuencia
 
 | Orden | Tarea | Resultado aprobable |
 | --- | --- | --- |
-| 1 | [Inicializar el CLI y su almacenamiento](01-inicializacion-del-cli-y-almacenamiento.md) | Una instalación nueva prepara o actualiza su base global sin intervención manual ni pérdida de datos. |
+| 1 | [Inicializar el CLI y su almacenamiento](01-inicializacion-del-cli-y-almacenamiento.md) | Un `init` válido prepara o actualiza la base local del repositorio sin pérdida de datos. |
 | 2 | [Inicializar e identificar proyectos](02-inicializacion-e-identidad-del-proyecto.md) | Un repositorio Git obtiene una identidad estable, compartida por sus worktrees y aislada de otros clones. |
 | 3 | [Registrar y consultar memorias](03-registro-y-consulta-de-memorias.md) | El usuario puede crear, obtener y listar memorias válidas dentro del proyecto activo. |
 | 4 | [Gestionar el ciclo de vida y el historial](04-ciclo-de-vida-e-historial.md) | Las memorias pueden evolucionar, eliminarse y restaurarse sin perder historia ni sobrescribir cambios concurrentes. |

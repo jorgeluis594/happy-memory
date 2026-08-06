@@ -12,12 +12,12 @@ import (
 
 func TestTransactionRetriesTemporaryContentionAndReportsPersistentBusy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), databaseFilename)
-	locker, err := open(context.Background(), path)
+	locker, err := OpenOrCreate(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = locker.Close() })
-	writer, err := open(context.Background(), path)
+	writer, err := OpenOrCreate(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}

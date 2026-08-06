@@ -10,7 +10,7 @@ import (
 
 func TestDiagnosticCheckerHealthyAndDoesNotMutateDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), databaseFilename)
-	database, err := open(context.Background(), path)
+	database, err := OpenOrCreate(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
