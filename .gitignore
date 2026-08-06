@@ -9,3 +9,6 @@
 
 # Local brainstorming artifacts
 /.superpowers/
+
+# Local happy-memory storage
+/.happy-memory/
