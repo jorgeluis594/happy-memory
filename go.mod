@@ -8,6 +8,7 @@ tool (
 )
 
 require (
+	github.com/glebarez/go-sqlite v1.21.2
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
 	github.com/pressly/goose/v3 v3.27.3
@@ -72,7 +73,6 @@ require (
 	github.com/fsnotify/fsnotify v1.5.4 // indirect
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v0.3.15 // indirect
-	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-critic/go-critic v0.13.0 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
