@@ -5,14 +5,53 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	gitadapter "github.com/jorgeluis594/happy-memory/internal/adapters/git"
+	"github.com/jorgeluis594/happy-memory/internal/adapters/sqlite"
+	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
 )
+
+func TestRuntimeResolvesGitOnceAcrossInitializeAndMemoryOperation(t *testing.T) {
+	repository := initRepository(t)
+	chdir(t, repository)
+	migrations, err := fs.Sub(sqlite.EmbeddedMigrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := &countingGitAdapter{Adapter: gitadapter.New()}
+	runtime := newRuntime(migrations)
+	runtime.git = git
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	if _, err = runtime.Initialize(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtime.Create(context.Background(), memory.CreateInput{
+		Type: "fact", Title: "one resolution", Content: "shared context", Importance: 3, Confidence: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if git.resolveCalls != 1 {
+		t.Fatalf("Resolve calls=%d, want 1", git.resolveCalls)
+	}
+}
+
+type countingGitAdapter struct {
+	*gitadapter.Adapter
+	resolveCalls int
+}
+
+func (adapter *countingGitAdapter) Resolve(ctx context.Context) (project.GitContext, error) {
+	adapter.resolveCalls++
+	return adapter.Adapter.Resolve(ctx)
+}
 
 func TestDoctorMissingDatabaseWritesOneJSONErrorAndCreatesNothing(t *testing.T) {
 	directory := t.TempDir()

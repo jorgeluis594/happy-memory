@@ -29,11 +29,12 @@ Do not add query-selection heuristics, infer filters, invent synonyms, or label 
 ## Execute One Attempt
 
 1. Run `happy-memory search <query>` with exactly the selected filters.
-2. Treat stdout as success only when the process exits with code zero and the JSON contains `ok: true`.
-3. Treat stderr as failure when the process exits with a nonzero code.
-4. Preserve each result's title and content verbatim.
-5. Record the query, filters, `ranking_version`, result count, result order, and score components.
-6. Return control to the primary agent after recording the attempt.
+2. If the command fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init` once. When initialization succeeds, repeat the original search with exactly the same query and filters. Treat the repeated search as the completion of the same attempt, and do not count `init` as a search command.
+3. Treat stdout as success only when the process exits with code zero and the JSON contains `ok: true`.
+4. Treat stderr as failure when the process exits with a nonzero code.
+5. Preserve each result's title and content verbatim.
+6. Record the query, filters, `ranking_version`, result count, result order, and score components.
+7. Return control to the primary agent after recording the attempt.
 
 Execute another attempt only when the primary agent chooses a new query or filter set. Execute at most three `search` commands in one retrieval. Count a corrected command after `VALIDATION_ERROR` toward this maximum.
 
@@ -107,7 +108,8 @@ For `failed`, preserve any candidates from earlier successful attempts and popul
 ## Handle Failures
 
 - If `happy-memory` is unavailable, return `failed` and report that the executable is missing.
-- On `GIT_REPOSITORY_NOT_FOUND`, `PROJECT_NOT_INITIALIZED`, `STORE_BUSY`, or `STORE_ERROR`, return `failed` without initializing, mutating, or repairing anything.
+- On `PROJECT_NOT_INITIALIZED`, initialize only through the one-time recovery in **Execute One Attempt**. If initialization fails, return `failed` with the initialization error. If the repeated search fails, return `failed` with that search error.
+- On `GIT_REPOSITORY_NOT_FOUND`, `STORE_BUSY`, or `STORE_ERROR`, return `failed` without initializing, mutating, or repairing anything.
 - On `VALIDATION_ERROR` from a generated command, correct the invocation once using the reference. Return `failed` if the corrected invocation fails.
 - Never convert a CLI error into `empty`.
-- Never invoke `init`, `create`, `update`, `delete`, `restore`, or any other mutating operation.
+- Except for the one-time `init` recovery, never invoke `create`, `update`, `delete`, `restore`, or any other mutating operation.
