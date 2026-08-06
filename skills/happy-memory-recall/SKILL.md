@@ -106,7 +106,7 @@ For `failed`, preserve any candidates from earlier successful attempts and popul
 
 ## Handle Failures
 
-- If `happy-memory` is unavailable, return `failed` and report that the executable is missing.
+- If `happy-memory` is unavailable, return `failed`, report that the executable is missing, and read [install-cli.md](references/install-cli.md) for installation steps.
 - On `GIT_REPOSITORY_NOT_FOUND`, `PROJECT_NOT_INITIALIZED`, `STORE_BUSY`, or `STORE_ERROR`, return `failed` without initializing, mutating, or repairing anything.
 - On `VALIDATION_ERROR` from a generated command, correct the invocation once using the reference. Return `failed` if the corrected invocation fails.
 - Never convert a CLI error into `empty`.
