@@ -206,7 +206,7 @@ Read operations may surface these stable codes:
 
 Treat a missing `happy-memory` executable as a local execution failure rather than a CLI JSON error.
 
-When a search fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init` once. If initialization succeeds, repeat the original search with exactly the same query and filters. The initialization command does not count toward the three-search limit, and the repeated command completes the original search attempt. If initialization fails, preserve and return its error without repeating the search. If the repeated search fails, preserve and return that search error.
+When a search fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init --configure-agent <current-agent>` once, selecting exactly one of `codex`, `claude-code`, or `opencode` for the agent executing the skill. Request scoped authorization when the host requires it to update global agent configuration. If initialization succeeds, repeat the original search with exactly the same query and filters. Preserve any `agent_configurations` warning and do not claim shared-worktree synchronization is configured. The initialization command does not count toward the three-search limit, and the repeated command completes the original search attempt. If initialization fails, preserve and return its error without repeating the search. If the repeated search fails, preserve and return that search error.
 
 Do not initialize for any other read failure. Never use any other mutation command as recovery.
 

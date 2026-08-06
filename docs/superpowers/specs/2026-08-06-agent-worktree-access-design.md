@@ -7,9 +7,9 @@
 project memory. An agent running from a secondary worktree may not be allowed to
 write that shared directory because it is outside the agent's active workspace.
 
-The first version will let callers explicitly name one agent during
-initialization. `happy-memory` will add the narrow shared `.happy-memory`
-directory to that agent's persistent external-write configuration.
+The first version lets callers explicitly name one or more agents during
+initialization. `happy-memory` adds the narrow shared `.happy-memory` directory
+to each requested agent's persistent external-write configuration.
 
 ## Scope
 
@@ -19,34 +19,30 @@ Support these agent identifiers:
 - `claude-code`
 - `opencode`
 
-This version will not detect installed or active agents, display an interactive
-selector, or configure multiple agents in one invocation. Those capabilities can
-be added later without changing the single-agent configuration service.
+This version will not detect installed or active agents or display an
+interactive selector. Multiple explicitly named agents are supported in one
+invocation.
 
 ## CLI contract
 
 Add an optional flag to `init`:
 
 ```text
-happy-memory init --configure-agent <codex|claude-code|opencode>
+happy-memory init --configure-agent codex,claude-code,opencode
 ```
 
-The flag accepts exactly one supported identifier. An empty or unknown value is
-a `VALIDATION_ERROR`. Without the flag, `init` preserves its current behavior
-and response contract: it initializes project memory but does not inspect or
-modify agent configuration.
+The flag accepts a comma-separated list of supported identifiers, trims
+whitespace, removes duplicates in first-seen order, and validates the complete
+list before initialization. An empty element or unknown value is a
+`VALIDATION_ERROR`. Without the flag, `init` preserves its current behavior and
+response contract: it initializes project memory but does not inspect or modify
+agent configuration.
 
 The command remains non-interactive and continues to emit exactly one JSON
 object. This makes it safe for skills, agents, and scripts.
 
-Add a retryable command for configuration without repeating initialization:
-
-```text
-happy-memory configure-agent <codex|claude-code|opencode>
-```
-
-It resolves the current Git common directory, requires an initialized project,
-and configures access to the same shared `.happy-memory` directory.
+There is no separate retry command. Since initialization is idempotent, callers
+retry the same `init --configure-agent ...` invocation.
 
 ## Agent-specific changes
 
@@ -79,30 +75,27 @@ settings.
 ## Configuration result
 
 Agent configuration is a separate outcome from project initialization. The
-successful `init --configure-agent` response includes an
-`agent_configuration` object with:
+successful `init --configure-agent` response includes an ordered
+`agent_configurations` array. Every item contains:
 
 - `agent`
-- `status`: `configured`, `already_configured`, `approval_required`,
-  `unsupported`, or `failed`
+- `status`: `configured`, `already_configured`, or `warning`
 - `config_path`
 - `shared_memory_path`
-- `retry_command` when another invocation can resolve the problem
+- a structured `warning` when configuration could not be applied
 
+Every requested agent is attempted even when an earlier one returns a warning.
 Project initialization remains successful if agent configuration is blocked by
-a sandbox or managed policy. The response reports `approval_required` or
-`unsupported`; it must not claim that synchronization is ready.
-
-The standalone `configure-agent` command fails with a stable public error when
-it cannot apply the requested configuration, because configuration is that
-command's primary operation.
+a sandbox, invalid file, or managed policy. The response reports a structured
+warning inside JSON and must not claim that synchronization is ready.
 
 ## Authorization boundary
 
 The CLI cannot invoke an agent product's approval dialog directly. It attempts
 only the requested configuration write. If the host sandbox denies that write,
 the structured result instructs the calling skill or agent to request scoped
-authorization and retry `happy-memory configure-agent <agent>`.
+authorization and retry the same idempotent `happy-memory init
+--configure-agent <agents>` command.
 
 Agent-specific skills should always pass their own explicit identifier. For
 example, the Codex skill invokes `--configure-agent codex`; it must not configure
@@ -132,8 +125,7 @@ it destructively.
 
 Keep agent configuration separate from project initialization:
 
-1. The Cobra adapter validates the agent identifier and exposes the two command
-   entry points.
+1. The Cobra adapter validates and normalizes the comma-separated agent list.
 2. An application service resolves the shared memory directory and coordinates
    one agent configurator.
 3. Each agent configurator owns config discovery, compatibility checks,
@@ -141,8 +133,8 @@ Keep agent configuration separate from project initialization:
 4. A filesystem writer owns permission preservation and atomic replacement.
 
 This boundary allows future interactive selection or agent detection to call
-the same single-agent service without coupling prompt behavior to configuration
-formats.
+the same per-agent configurators without coupling prompt behavior to
+configuration formats.
 
 ## Testing
 
@@ -151,7 +143,7 @@ Cover:
 - `init` without the flag remains byte-for-byte compatible where its existing
   response is asserted;
 - all supported and unsupported flag values;
-- one agent per invocation;
+- multiple agents, whitespace normalization, deduplication, and stable order;
 - missing, existing, and already-configured files;
 - preservation of unrelated settings, comments, ordering where required, and
   file permissions;
@@ -162,7 +154,6 @@ Cover:
 - atomic-write failures leave the source unchanged;
 - sandbox denial produces an actionable structured result;
 - linked worktrees resolve the same shared `.happy-memory` directory;
-- standalone `configure-agent` requires an initialized Git project.
 
 Integration fixtures should use temporary home/config directories and must not
 modify the developer's real agent configuration.

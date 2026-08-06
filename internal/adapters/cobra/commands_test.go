@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jorgeluis594/happy-memory/internal/agentconfig"
 	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
@@ -39,6 +41,26 @@ type stubService struct{ value project.Project }
 
 func (stub stubService) Initialize(context.Context, *string) (project.Project, error) {
 	return stub.value, nil
+}
+func (stub stubService) InitializeWithAgents(_ context.Context, _ *string, agents []agentconfig.Agent) (project.Project, []agentconfig.Result, error) {
+	results := make([]agentconfig.Result, 0, len(agents))
+	for _, agent := range agents {
+		results = append(results, agentconfig.Result{Agent: agent, Status: agentconfig.StatusConfigured, ConfigPath: "/config", SharedMemoryPath: "/shared"})
+	}
+	return stub.value, results, nil
+}
+
+func TestInitConfiguresCommaSeparatedAgentsAndRejectsInvalidLists(t *testing.T) {
+	value := project.Project{ID: "p1", Name: "project", LastKnownGitCommonDir: "/repo/.git", CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}
+	output, err := Execute(context.Background(), []string{"init", "--configure-agent", "codex, claude-code,codex"}, stubService{value: value})
+	if err != nil || !strings.Contains(string(output), `"agent_configurations":[{"agent":"codex"`) || strings.Count(string(output), `"agent":"codex"`) != 1 || !strings.Contains(string(output), `"agent":"claude-code"`) {
+		t.Fatalf("output=%s err=%v", output, err)
+	}
+	for _, input := range []string{"", "codex,", "unknown", "codex,,opencode"} {
+		if _, err = Execute(context.Background(), []string{"init", "--configure-agent", input}, stubService{value: value}); project.Code(err) != project.CodeValidationError {
+			t.Fatalf("input=%q err=%v", input, err)
+		}
+	}
 }
 
 type searchStub struct {

@@ -224,7 +224,7 @@ func TestVersionWorksOutsideRepositoryAndCreatesNothing(t *testing.T) {
 func TestInvalidInputDoesNotCreateDatabase(t *testing.T) {
 	repository := initRepository(t)
 	chdir(t, repository)
-	for _, args := range [][]string{{"init", "extra"}, {"init", "--unknown"}, {"init", "--name", " "}} {
+	for _, args := range [][]string{{"init", "extra"}, {"init", "--unknown"}, {"init", "--name", " "}, {"init", "--configure-agent", "codex,"}} {
 		var stdout, stderr bytes.Buffer
 		if code := Run(context.Background(), args, &stdout, &stderr); code == 0 {
 			t.Fatalf("Run(%v) exit code = 0", args)
@@ -232,6 +232,49 @@ func TestInvalidInputDoesNotCreateDatabase(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(repository, ".happy-memory")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("Run(%v) created storage: %v", args, err)
 		}
+	}
+}
+
+func TestInitConfiguresMultipleAgentsAndReturnsWarningsWithoutFailing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	repository := initRepository(t)
+	chdir(t, repository)
+	invalidClaude := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(invalidClaude), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invalidClaude, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"init", "--configure-agent", "codex,claude-code,opencode"}
+	if code := Run(context.Background(), args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var response struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Configurations []struct {
+				Agent   string `json:"agent"`
+				Status  string `json:"status"`
+				Warning *struct {
+					Code string `json:"code"`
+				} `json:"warning"`
+			} `json:"agent_configurations"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || len(response.Data.Configurations) != 3 || response.Data.Configurations[0].Status != "configured" || response.Data.Configurations[1].Status != "warning" || response.Data.Configurations[1].Warning == nil || response.Data.Configurations[2].Status != "configured" {
+		t.Fatalf("response=%s", stdout.String())
+	}
+	stdout.Reset()
+	if code := Run(context.Background(), args, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"status":"already_configured"`) {
+		t.Fatalf("repeat code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 

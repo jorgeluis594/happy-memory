@@ -29,7 +29,7 @@ Do not add query-selection heuristics, infer filters, invent synonyms, or label 
 ## Execute One Attempt
 
 1. Run `happy-memory search <query>` with exactly the selected filters.
-2. If the command fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init` once. When initialization succeeds, repeat the original search with exactly the same query and filters. Treat the repeated search as the completion of the same attempt, and do not count `init` as a search command.
+2. If the command fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init --configure-agent <current-agent>` once, using `codex`, `claude-code`, or `opencode` for the agent executing the skill. Configure only the current agent. When the host requires scoped authorization to update global agent configuration, request it for this command. Treat `agent_configurations[].status: warning` as successful project initialization but report that shared-worktree access is not configured; do not silently claim synchronization is ready. When initialization succeeds, repeat the original search with exactly the same query and filters. Treat the repeated search as the completion of the same attempt, and do not count `init` as a search command.
 3. Treat stdout as success only when the process exits with code zero and the JSON contains `ok: true`.
 4. Treat stderr as failure when the process exits with a nonzero code.
 5. Preserve each result's title and content verbatim.
@@ -108,7 +108,7 @@ For `failed`, preserve any candidates from earlier successful attempts and popul
 ## Handle Failures
 
 - If `happy-memory` is unavailable, return `failed` and report that the executable is missing.
-- On `PROJECT_NOT_INITIALIZED`, initialize only through the one-time recovery in **Execute One Attempt**. If initialization fails, return `failed` with the initialization error. If the repeated search fails, return `failed` with that search error.
+- On `PROJECT_NOT_INITIALIZED`, initialize only through the one-time recovery in **Execute One Attempt**, passing only the current agent identifier. If initialization fails, return `failed` with the initialization error. If initialization succeeds with an agent-configuration warning, preserve that warning in the failure packet while continuing the repeated search. If the repeated search fails, return `failed` with that search error.
 - On `GIT_REPOSITORY_NOT_FOUND`, `STORE_BUSY`, or `STORE_ERROR`, return `failed` without initializing, mutating, or repairing anything.
 - On `VALIDATION_ERROR` from a generated command, correct the invocation once using the reference. Return `failed` if the corrected invocation fails.
 - Never convert a CLI error into `empty`.
