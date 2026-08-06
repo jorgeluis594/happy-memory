@@ -243,6 +243,29 @@ type Repository interface {
 // ProjectContext identifies the current project and worktree.
 type ProjectContext struct{ ID, WorktreeRoot string }
 
+// BatchOperation describes one independently atomic lifecycle mutation.
+type BatchOperation struct {
+	Operation       string
+	MemoryID        string
+	ExpectedVersion int
+	CreateInput     *CreateInput
+	UpdateInput     *UpdateInput
+}
+
+// BatchResult preserves the input position and outcome of one operation.
+type BatchResult struct {
+	Index     int
+	Operation string
+	Memory    Memory
+	Err       error
+}
+
+// BatchResponse summarizes a fully processed batch.
+type BatchResponse struct {
+	Total, Succeeded, Failed int
+	Results                  []BatchResult
+}
+
 // ProjectResolver resolves the active project for a use case.
 type ProjectResolver interface {
 	Current(context.Context) (ProjectContext, error)
@@ -276,6 +299,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Memory, error) {
 	if err != nil {
 		return Memory{}, err
 	}
+	return s.create(ctx, p, in)
+}
+
+func (s *Service) create(ctx context.Context, p ProjectContext, in CreateInput) (Memory, error) {
 	now := s.now()
 	m := Memory{ID: s.ids.New(), ProjectID: p.ID, Version: 1, Type: in.Type, Title: in.Title, Content: in.Content, Importance: in.Importance, Confidence: in.Confidence, Attributes: cloneJSON(in.Attributes), ContentHash: ContentHash(in.Type, in.Title, in.Content), CreatedAt: now, UpdatedAt: now}
 	for _, input := range in.Tags {
@@ -322,7 +349,11 @@ func (s *Service) Update(ctx context.Context, id string, expected int, in Update
 	if err != nil {
 		return Memory{}, err
 	}
-	if err = checkVersion(current, expected); err != nil {
+	return s.update(ctx, p, current, expected, in)
+}
+
+func (s *Service) update(ctx context.Context, p ProjectContext, current Memory, expected int, in UpdateInput) (Memory, error) {
+	if err := checkVersion(current, expected); err != nil {
 		return Memory{}, err
 	}
 	if current.DeletedAt != nil {
@@ -334,7 +365,7 @@ func (s *Service) Update(ctx context.Context, id string, expected int, in Update
 	if in.Tags.Set {
 		create.Tags = append([]TagInput(nil), in.Tags.Value...)
 	}
-	if err = NormalizeAndValidate(&create); err != nil {
+	if err := NormalizeAndValidate(&create); err != nil {
 		return Memory{}, err
 	}
 	next.Type, next.Title, next.Content, next.Importance, next.Confidence, next.Attributes = create.Type, create.Title, create.Content, create.Importance, create.Confidence, cloneJSON(create.Attributes)
@@ -368,7 +399,11 @@ func (s *Service) Delete(ctx context.Context, id string, expected int) (Memory, 
 	if err != nil {
 		return Memory{}, err
 	}
-	if err = checkVersion(current, expected); err != nil {
+	return s.delete(ctx, p, current, expected)
+}
+
+func (s *Service) delete(ctx context.Context, p ProjectContext, current Memory, expected int) (Memory, error) {
+	if err := checkVersion(current, expected); err != nil {
 		return Memory{}, err
 	}
 	if current.DeletedAt != nil {
@@ -384,6 +419,71 @@ func (s *Service) Delete(ctx context.Context, id string, expected int) (Memory, 
 		return Memory{}, e
 	}
 	return s.repo.Mutate(ctx, MutationRecord{next, rev, expected})
+}
+
+// Batch validates the envelope, resolves the project once, and runs operations in order.
+func (s *Service) Batch(ctx context.Context, operations []BatchOperation) (BatchResponse, error) {
+	if err := validateBatch(operations); err != nil {
+		return BatchResponse{}, err
+	}
+	p, err := s.projects.Current(ctx)
+	if err != nil {
+		return BatchResponse{}, err
+	}
+	response := BatchResponse{Total: len(operations), Results: make([]BatchResult, 0, len(operations))}
+	for index, operation := range operations {
+		result := BatchResult{Index: index, Operation: operation.Operation}
+		switch operation.Operation {
+		case "create":
+			input := *operation.CreateInput
+			if result.Err = NormalizeAndValidate(&input); result.Err == nil {
+				result.Memory, result.Err = s.create(ctx, p, input)
+			}
+		case "update", "delete":
+			var current Memory
+			current, result.Err = s.repo.Get(ctx, p.ID, operation.MemoryID, true)
+			if result.Err == nil && operation.Operation == "update" {
+				result.Memory, result.Err = s.update(ctx, p, current, operation.ExpectedVersion, *operation.UpdateInput)
+			} else if result.Err == nil {
+				result.Memory, result.Err = s.delete(ctx, p, current, operation.ExpectedVersion)
+			}
+		}
+		if result.Err == nil {
+			response.Succeeded++
+		} else {
+			response.Failed++
+		}
+		response.Results = append(response.Results, result)
+	}
+	return response, nil
+}
+
+func validateBatch(operations []BatchOperation) error {
+	if len(operations) < 1 || len(operations) > 100 {
+		return validation()
+	}
+	seen := make(map[string]bool)
+	for _, operation := range operations {
+		switch operation.Operation {
+		case "create":
+			if operation.CreateInput == nil || operation.UpdateInput != nil || operation.MemoryID != "" || operation.ExpectedVersion != 0 {
+				return validation()
+			}
+		case "update":
+			if operation.UpdateInput == nil || operation.CreateInput != nil || !validID(operation.MemoryID) || operation.ExpectedVersion < 1 || seen[operation.MemoryID] {
+				return validation()
+			}
+			seen[operation.MemoryID] = true
+		case "delete":
+			if operation.CreateInput != nil || operation.UpdateInput != nil || !validID(operation.MemoryID) || operation.ExpectedVersion < 1 || seen[operation.MemoryID] {
+				return validation()
+			}
+			seen[operation.MemoryID] = true
+		default:
+			return validation()
+		}
+	}
+	return nil
 }
 
 // Restore reactivates a deleted memory from a historical revision.

@@ -75,12 +75,19 @@ func TestSearchCommandRequiresOneQuery(t *testing.T) {
 }
 
 type memoryStub struct {
-	value     memory.Memory
-	input     memory.CreateInput
-	filter    memory.ListFilter
-	tagValues []memory.Tag
-	tagQuery  string
-	err       error
+	value      memory.Memory
+	input      memory.CreateInput
+	operations []memory.BatchOperation
+	batch      memory.BatchResponse
+	filter     memory.ListFilter
+	tagValues  []memory.Tag
+	tagQuery   string
+	err        error
+}
+
+func (s *memoryStub) Batch(_ context.Context, operations []memory.BatchOperation) (memory.BatchResponse, error) {
+	s.operations = operations
+	return s.batch, s.err
 }
 
 func (s *memoryStub) Create(_ context.Context, input memory.CreateInput) (memory.Memory, error) {
@@ -122,6 +129,32 @@ func TestMemoryCreateAcceptsBothTagInputFormats(t *testing.T) {
 	}
 	if len(service.input.Tags) != 2 || service.input.Tags[0].Name != "git" || service.input.Tags[1].Description == nil || *service.input.Tags[1].Description != "Storage" {
 		t.Fatalf("input tags=%#v", service.input.Tags)
+	}
+}
+
+func TestBatchCommandUsesStrictSchemaAndReturnsOrderedItemErrors(t *testing.T) {
+	stamp := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	value := memory.Memory{ID: "memory-id", Version: 1, Type: "fact", Title: "title", Content: "content", Importance: 4, Confidence: 3, Tags: []memory.Tag{}, ContentHash: "hash", CreatedAt: stamp, UpdatedAt: stamp}
+	service := &memoryStub{batch: memory.BatchResponse{Total: 2, Succeeded: 1, Failed: 1, Results: []memory.BatchResult{{Index: 0, Operation: "create", Memory: value}, {Index: 1, Operation: "delete", Err: memory.NewError(memory.CodeNotFound, errors.New("missing"))}}}}
+	body := `{"operations":[{"operation":"create","input":{"type":"fact","title":"title","content":"content","importance":4,"confidence":3,"tags":[]}},{"operation":"delete","memory_id":"28fef1e4-42c5-43ca-a0c8-0c731797c06f","expected_version":1}]}`
+	output, err := ExecuteWithMemory(context.Background(), []string{"batch", "--input", "-"}, bytes.NewBufferString(body), stubService{}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"ok\":true,\"data\":{\"summary\":{\"total\":2,\"succeeded\":1,\"failed\":1},\"results\":[{\"index\":0,\"operation\":\"create\",\"ok\":true,\"data\":{\"id\":\"memory-id\",\"version\":1,\"type\":\"fact\",\"title\":\"title\",\"content\":\"content\",\"importance\":4,\"confidence\":3,\"attributes\":null,\"tags\":[],\"content_hash\":\"hash\",\"created_at\":\"2026-08-06T12:00:00Z\",\"updated_at\":\"2026-08-06T12:00:00Z\",\"deleted_at\":null}},{\"index\":1,\"operation\":\"delete\",\"ok\":false,\"error\":{\"code\":\"MEMORY_NOT_FOUND\",\"message\":\"memory not found\",\"details\":{}}}]}}\n"
+	if string(output) != want || len(service.operations) != 2 || service.operations[0].CreateInput == nil {
+		t.Fatalf("output=%s operations=%#v", output, service.operations)
+	}
+	for _, invalid := range []string{
+		`{"operations":[{"operation":"create","input":{},"extra":true}]}`,
+		`{"operations":[{"operation":"restore"}]}`,
+		`{"operations":[{"operation":"delete","memory_id":"x"}]}`,
+		`{"operations":[]} trailing`,
+		`{"operations":[],"extra":true}`,
+	} {
+		if _, err := ExecuteWithMemory(context.Background(), []string{"batch", "--input", "-"}, bytes.NewBufferString(invalid), stubService{}, service); project.Code(err) != project.CodeValidationError {
+			t.Fatalf("accepted %s: %v", invalid, err)
+		}
 	}
 }
 

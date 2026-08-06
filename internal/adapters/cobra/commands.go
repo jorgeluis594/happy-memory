@@ -13,6 +13,7 @@ import (
 	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
+	"github.com/jorgeluis594/happy-memory/internal/publicerror"
 	"github.com/jorgeluis594/happy-memory/internal/search"
 	spf13cobra "github.com/spf13/cobra"
 )
@@ -24,6 +25,7 @@ type projectService interface {
 }
 
 type memoryService interface {
+	Batch(context.Context, []memory.BatchOperation) (memory.BatchResponse, error)
 	Create(context.Context, memory.CreateInput) (memory.Memory, error)
 	Update(context.Context, string, int, memory.UpdateInput) (memory.Memory, error)
 	Delete(context.Context, string, int) (memory.Memory, error)
@@ -206,6 +208,43 @@ type searchSuccess struct {
 }
 
 func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.Reader, service memoryService) {
+	var batchInputSource string
+	batchCommand := &spf13cobra.Command{Use: "batch", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
+		if !command.Flags().Changed("input") || batchInputSource != "-" || input == nil {
+			return errors.New("invalid input")
+		}
+		var wire batchInput
+		if err := decodeStrict(input, &wire); err != nil {
+			return errors.New("invalid input")
+		}
+		operations := make([]memory.BatchOperation, 0, len(wire.Operations))
+		for _, raw := range wire.Operations {
+			operation, err := decodeBatchOperation(raw)
+			if err != nil {
+				return errors.New("invalid input")
+			}
+			operations = append(operations, operation)
+		}
+		response, err := service.Batch(command.Context(), operations)
+		if err != nil {
+			return err
+		}
+		results := make([]batchResultJSON, 0, len(response.Results))
+		for _, result := range response.Results {
+			item := batchResultJSON{Index: result.Index, Operation: result.Operation, OK: result.Err == nil}
+			if result.Err == nil {
+				value := toMemoryJSON(result.Memory)
+				item.Data = &value
+			} else {
+				value := publicerror.From(result.Err)
+				item.Error = &value
+			}
+			results = append(results, item)
+		}
+		return writeJSON(output, batchSuccess{OK: true, Data: batchData{Summary: batchSummary{Total: response.Total, Succeeded: response.Succeeded, Failed: response.Failed}, Results: results}})
+	}}
+	batchCommand.Flags().StringVar(&batchInputSource, "input", "", "read one JSON object from stdin")
+
 	var inputSource string
 	createCommand := &spf13cobra.Command{Use: "create", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
 		if !command.Flags().Changed("input") || inputSource != "-" || input == nil {
@@ -335,7 +374,98 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 			return writeJSON(output, tagListSuccess{OK: true, Data: tagListData{Tags: toVocabularyJSON(values)}})
 		}},
 	)
-	root.AddCommand(createCommand, updateCommand, deleteCommand, restoreCommand, getCommand, listCommand, historyCommand, tagsCommand)
+	root.AddCommand(batchCommand, createCommand, updateCommand, deleteCommand, restoreCommand, getCommand, listCommand, historyCommand, tagsCommand)
+}
+
+type batchInput struct {
+	Operations []json.RawMessage `json:"operations"`
+}
+
+type batchSummary struct {
+	Total     int `json:"total"`
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+}
+
+type batchResultJSON struct {
+	Index     int                `json:"index"`
+	Operation string             `json:"operation"`
+	OK        bool               `json:"ok"`
+	Data      *memoryJSON        `json:"data,omitempty"`
+	Error     *publicerror.Error `json:"error,omitempty"`
+}
+
+type batchData struct {
+	Summary batchSummary      `json:"summary"`
+	Results []batchResultJSON `json:"results"`
+}
+
+type batchSuccess struct {
+	OK   bool      `json:"ok"`
+	Data batchData `json:"data"`
+}
+
+func decodeBatchOperation(raw json.RawMessage) (memory.BatchOperation, error) {
+	var header map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &header); err != nil || header == nil {
+		return memory.BatchOperation{}, errors.New("invalid input")
+	}
+	var operation string
+	if err := json.Unmarshal(header["operation"], &operation); err != nil {
+		return memory.BatchOperation{}, errors.New("invalid input")
+	}
+	switch operation {
+	case "create":
+		if !exactKeys(header, "operation", "input") {
+			return memory.BatchOperation{}, errors.New("invalid input")
+		}
+		var object map[string]json.RawMessage
+		if json.Unmarshal(header["input"], &object) != nil || object == nil {
+			return memory.BatchOperation{}, errors.New("invalid input")
+		}
+		var input memory.CreateInput
+		if err := decodeStrict(bytes.NewReader(header["input"]), &input); err != nil {
+			return memory.BatchOperation{}, err
+		}
+		return memory.BatchOperation{Operation: operation, CreateInput: &input}, nil
+	case "update":
+		if !exactKeys(header, "operation", "memory_id", "expected_version", "input") {
+			return memory.BatchOperation{}, errors.New("invalid input")
+		}
+		var value struct {
+			MemoryID        string             `json:"memory_id"`
+			ExpectedVersion int                `json:"expected_version"`
+			Input           memory.UpdateInput `json:"input"`
+		}
+		if json.Unmarshal(header["memory_id"], &value.MemoryID) != nil || json.Unmarshal(header["expected_version"], &value.ExpectedVersion) != nil || json.Unmarshal(header["input"], &value.Input) != nil {
+			return memory.BatchOperation{}, errors.New("invalid input")
+		}
+		return memory.BatchOperation{Operation: operation, MemoryID: value.MemoryID, ExpectedVersion: value.ExpectedVersion, UpdateInput: &value.Input}, nil
+	case "delete":
+		if !exactKeys(header, "operation", "memory_id", "expected_version") {
+			return memory.BatchOperation{}, errors.New("invalid input")
+		}
+		var memoryID string
+		var expected int
+		if json.Unmarshal(header["memory_id"], &memoryID) != nil || json.Unmarshal(header["expected_version"], &expected) != nil {
+			return memory.BatchOperation{}, errors.New("invalid input")
+		}
+		return memory.BatchOperation{Operation: operation, MemoryID: memoryID, ExpectedVersion: expected}, nil
+	default:
+		return memory.BatchOperation{}, errors.New("invalid input")
+	}
+}
+
+func exactKeys(values map[string]json.RawMessage, keys ...string) bool {
+	if len(values) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := values[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 type tagJSON struct {

@@ -12,6 +12,16 @@ type projectStub struct{ value ProjectContext }
 
 func (s projectStub) Current(context.Context) (ProjectContext, error) { return s.value, nil }
 
+type countingProjectStub struct {
+	value ProjectContext
+	calls int
+}
+
+func (s *countingProjectStub) Current(context.Context) (ProjectContext, error) {
+	s.calls++
+	return s.value, nil
+}
+
 type clockStub struct{ value time.Time }
 
 func (s clockStub) Now() time.Time { return s.value }
@@ -237,6 +247,72 @@ func TestUpdateInputPresenceAndNullRules(t *testing.T) {
 	for _, body := range []string{`{"tags":null}`, `{"unknown":true}`, `[]`} {
 		if json.Unmarshal([]byte(body), &patch) == nil {
 			t.Fatalf("accepted %s", body)
+		}
+	}
+}
+
+func TestBatchPreservesOrderContinuesAndResolvesProjectOnce(t *testing.T) {
+	id := "28fef1e4-42c5-43ca-a0c8-0c731797c06f"
+	repo := &lifecycleRepo{}
+	projects := &countingProjectStub{value: ProjectContext{ID: "project", WorktreeRoot: "/repo"}}
+	service := NewService(projects, repo, clockStub{time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)}, &idsStub{values: []string{id}})
+	invalid := CreateInput{Type: "invalid"}
+	valid := CreateInput{Type: "fact", Title: "title", Content: "content", Importance: 3, Confidence: 4, Tags: []TagInput{}}
+	response, err := service.Batch(context.Background(), []BatchOperation{
+		{Operation: "create", CreateInput: &invalid},
+		{Operation: "create", CreateInput: &valid},
+		{Operation: "delete", MemoryID: id, ExpectedVersion: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projects.calls != 1 || response.Total != 3 || response.Succeeded != 2 || response.Failed != 1 {
+		t.Fatalf("projects=%d response=%#v", projects.calls, response)
+	}
+	if response.Results[0].Index != 0 || ErrorCode(response.Results[0].Err) != CodeValidationError || response.Results[1].Memory.ID != id || response.Results[2].Memory.DeletedAt == nil {
+		t.Fatalf("results=%#v", response.Results)
+	}
+}
+
+func TestBatchRejectsGlobalShapeBeforeResolutionOrMutation(t *testing.T) {
+	id := "28fef1e4-42c5-43ca-a0c8-0c731797c06f"
+	for name, operations := range map[string][]BatchOperation{
+		"empty":     {},
+		"duplicate": {{Operation: "update", MemoryID: id, ExpectedVersion: 1, UpdateInput: &UpdateInput{}}, {Operation: "delete", MemoryID: id, ExpectedVersion: 1}},
+		"unknown":   {{Operation: "restore"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := &lifecycleRepo{}
+			projects := &countingProjectStub{}
+			service := NewService(projects, repo, clockStub{}, &idsStub{})
+			if _, err := service.Batch(context.Background(), operations); ErrorCode(err) != CodeValidationError {
+				t.Fatalf("error=%v", err)
+			}
+			if projects.calls != 0 || repo.mutations != 0 || len(repo.revisions) != 0 {
+				t.Fatalf("calls=%d repo=%#v", projects.calls, repo)
+			}
+		})
+	}
+	tooMany := make([]BatchOperation, 101)
+	for index := range tooMany {
+		input := CreateInput{}
+		tooMany[index] = BatchOperation{Operation: "create", CreateInput: &input}
+	}
+	service := NewService(&countingProjectStub{}, &lifecycleRepo{}, clockStub{}, &idsStub{})
+	if _, err := service.Batch(context.Background(), tooMany); ErrorCode(err) != CodeValidationError {
+		t.Fatalf("101 operations error=%v", err)
+	}
+	for _, count := range []int{1, 100} {
+		operations := make([]BatchOperation, count)
+		for index := range operations {
+			input := CreateInput{}
+			operations[index] = BatchOperation{Operation: "create", CreateInput: &input}
+		}
+		projects := &countingProjectStub{value: ProjectContext{ID: "project"}}
+		service := NewService(projects, &lifecycleRepo{}, clockStub{}, &idsStub{})
+		response, err := service.Batch(context.Background(), operations)
+		if err != nil || response.Total != count || response.Failed != count || projects.calls != 1 {
+			t.Fatalf("count=%d response=%#v calls=%d err=%v", count, response, projects.calls, err)
 		}
 	}
 }
