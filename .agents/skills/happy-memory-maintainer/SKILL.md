@@ -57,8 +57,10 @@ For creation, load creation, scoring, tags, retrievable writing, and CLI contrac
 3. Load the references routed for the case.
 4. Search only related active memories and tag vocabulary.
 5. Choose create, update, divide, delete, or no change for each candidate.
-6. Execute one mutation per memory and verify its process exit and JSON response.
-7. Complete dependent mutations only after their prerequisites succeed.
-8. Leave unrelated correct memories unchanged.
+6. Prepare all mutation operations whose inputs and safety conditions are known.
+7. Submit the ready operations with `happy-memory batch --input -`, even when there is exactly one operation.
+8. Verify the process exit, the batch envelope, and every ordered item result.
+9. Submit dependent operations in later batches only after their prerequisites succeed.
+10. Leave unrelated correct memories unchanged.
 
-Treat each mutation as independent because the CLI provides no batch transaction across memories.
+Use `batch` as the only mutation path. Batching does not change memory atomicity and does not provide an all-or-nothing transaction: preserve every item outcome and continue only with operations that do not depend on failed items.

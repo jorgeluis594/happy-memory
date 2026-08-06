@@ -27,11 +27,11 @@ Do not create wording variants to bypass duplicate or semantic overlap.
 2. Write a short discriminative title and self-contained content.
 3. Assign importance and confidence independently.
 4. Resolve a minimal keyword tag set from bounded vocabulary searches.
-5. Construct one complete create document.
-6. Run one `create` command per candidate.
-7. Accept success only after a zero exit code and `ok: true` response.
+5. Construct one complete `create` operation per candidate.
+6. Collect all ready candidate operations into the next batch, including a single operation when only one is ready.
+7. Submit the batch through the mutation contract and inspect the ordered item result for every candidate.
 
-Persist candidates sequentially. A failed candidate does not undo earlier creations; continue only with candidates that do not depend on the failed result.
+A failed candidate does not undo successful creations in the same batch. Continue only with candidates and later operations that do not depend on the failed result.
 
 ## Finish the Case
 

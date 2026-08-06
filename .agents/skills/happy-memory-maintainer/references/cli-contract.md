@@ -8,9 +8,8 @@ Use this contract before running any read or mutation command. Run every command
 - [Memory types](#memory-types)
 - [Search related memories](#search-related-memories)
 - [Get current state](#get-current-state)
-- [Create](#create)
-- [Update](#update)
-- [Delete](#delete)
+- [Run mutations in a batch](#run-mutations-in-a-batch)
+- [Batch response](#batch-response)
 - [Search tag vocabulary](#search-tag-vocabulary)
 - [Handle stable errors](#handle-stable-errors)
 
@@ -57,15 +56,29 @@ happy-memory get <memory-id>
 
 Use the returned current version as `expected-version`. Do not mutate from a stale search result.
 
-## Create
+## Run Mutations in a Batch
 
 Run:
 
 ```text
-happy-memory create --input -
+happy-memory batch --input -
 ```
 
-Send exactly one strict JSON object through stdin with these fields:
+Use this as the only mutation command, including when there is exactly one operation. Send one strict JSON object through stdin with an `operations` array containing 1 to 100 ordered items:
+
+```json
+{"operations":[...]}
+```
+
+Every item must be exactly one of the following shapes. Do not target the same existing memory more than once in one batch.
+
+For creation:
+
+```json
+{"operation":"create","input":{"type":"fact","title":"Atomic title","content":"Complete content","importance":4,"confidence":5,"attributes":null,"tags":["keyword"]}}
+```
+
+The create `input` accepts these fields:
 
 | Field | Requirement |
 | --- | --- |
@@ -80,25 +93,44 @@ Send exactly one strict JSON object through stdin with these fields:
 
 Do not supply derived ID, version, hashes, dates, project identity, or worktree provenance.
 
-## Update
+For update:
 
-Run:
-
-```text
-happy-memory update <memory-id> --expected-version <n> --input -
+```json
+{"operation":"update","memory_id":"<memory-id>","expected_version":2,"input":{"title":"Revised title"}}
 ```
 
-Send one strict JSON patch through stdin. Omit an unchanged field. An absent member preserves current state. `attributes: null` removes attributes. `tags: []` removes every association. Any present `tags` member replaces the complete tag set. An effective update increments the version; a no-op patch does not.
+The update `input` is a strict JSON patch. Omit an unchanged field. An absent member preserves current state. `attributes: null` removes attributes. `tags: []` removes every association. Any present `tags` member replaces the complete tag set. An effective update increments the version; a no-op patch does not.
 
-## Delete
+For deletion:
 
-Run:
-
-```text
-happy-memory delete <memory-id> --expected-version <n>
+```json
+{"operation":"delete","memory_id":"<memory-id>","expected_version":2}
 ```
 
 Delete only after qualifying the deletion case and retrieving the current version. Deletion is logical: it removes the memory from normal retrieval while preserving current data and revision history.
+
+Operations run in input order and are independently atomic. The batch is not an all-or-nothing transaction, so a failed item does not roll back successful items. Use later batches for operations whose inputs or safety conditions depend on earlier results.
+
+## Batch Response
+
+A processed batch writes one response with this structure:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "summary": {"total": 2, "succeeded": 1, "failed": 1},
+    "results": [
+      {"index": 0, "operation": "create", "ok": true, "data": {"id": "<memory-id>", "version": 1}},
+      {"index": 1, "operation": "delete", "ok": false, "error": {"code": "MEMORY_NOT_FOUND", "message": "memory not found", "details": {}}}
+    ]
+  }
+}
+```
+
+Successful items contain the complete resulting memory in `data`; the abbreviated object above highlights the identity and version fields. Require a zero exit code and `ok: true` for the envelope, then inspect every result in input order. Envelope success does not mean that every operation succeeded. Match each result to its prepared operation by `index` and `operation`, preserve item errors, and run dependent work only after the required items report `ok: true`.
+
+An invalid envelope or operation shape fails the command before the batch is processed. Treat that command-level failure separately from errors returned by processed items.
 
 ## Search Tag Vocabulary
 
@@ -112,12 +144,12 @@ Use a non-empty specific query. Never use `tags list`. Treat the native `--limit
 
 ## Handle Stable Errors
 
-- `VERSION_CONFLICT`: retrieve current state, reassess, and retry the intended mutation at most once.
+- `VERSION_CONFLICT`: retrieve current state, reassess, and retry the intended operation at most once in a later batch.
 - `DUPLICATE_MEMORY`: inspect the existing active memory and route to update or no change.
-- `VALIDATION_ERROR`: correct one generated invocation when this contract identifies the defect; otherwise stop.
-- `MEMORY_NOT_FOUND`: stop the target mutation without substituting another ID.
+- `VALIDATION_ERROR`: correct one generated batch or operation when this contract identifies the defect; otherwise stop.
+- `MEMORY_NOT_FOUND`: stop the target operation without substituting another ID.
 - `GIT_REPOSITORY_NOT_FOUND` or `PROJECT_NOT_INITIALIZED`: stop without initialization or repair.
-- `STORE_BUSY` or `STORE_ERROR`: preserve the failure and stop dependent mutations.
+- `STORE_BUSY` or `STORE_ERROR`: preserve the failure and stop dependent operations.
 - Missing executable: report that `happy-memory` is unavailable.
 
-Never convert an error into an empty result. When several independent memories are being maintained, continue only with operations that do not depend on the failed command.
+Never convert an error into an empty result. A batch envelope can succeed while items fail; preserve every item error and continue only with operations that do not depend on failed items.

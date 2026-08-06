@@ -24,13 +24,14 @@ Do not delete solely because a memory is old, rarely used, low importance, low c
 2. Re-check the qualifying condition against current evidence.
 3. For duplication or division, inspect the retained active memories and confirm complete coverage.
 4. Route to update if any durable current assertion should remain searchable.
-5. Run `delete` with the retrieved version as `expected-version`.
-6. Verify the exit code and `ok: true` response.
+5. Prepare a `delete` operation with the retrieved version as `expected_version`.
+6. Add it to the next batch of ready operations, even when it is the only operation.
+7. Submit the batch and inspect the corresponding ordered item result.
 
 Remember that CLI deletion is logical: it removes the memory from active retrieval while preserving its revisions.
 
 ## Resolve Failures
 
-- On `VERSION_CONFLICT`, retrieve the new state, reassess deletion, and retry once only if the criterion still holds.
+- On `VERSION_CONFLICT`, retrieve the new state, reassess deletion, and retry it in a later batch once only if the criterion still holds.
 - On missing, validation, or storage errors, preserve the failure and do not substitute another target.
 - Never delete a related memory merely to make a failed deletion or creation succeed.
