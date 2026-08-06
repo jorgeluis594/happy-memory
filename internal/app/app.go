@@ -8,13 +8,16 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	agentconfigadapter "github.com/jorgeluis594/happy-memory/internal/adapters/agentconfig"
 	commandadapter "github.com/jorgeluis594/happy-memory/internal/adapters/cobra"
 	gitadapter "github.com/jorgeluis594/happy-memory/internal/adapters/git"
 	"github.com/jorgeluis594/happy-memory/internal/adapters/sqlite"
+	"github.com/jorgeluis594/happy-memory/internal/agentconfig"
 	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
@@ -57,10 +60,11 @@ type runtime struct {
 	projects   *project.Service
 	memories   *memory.Service
 	searches   *search.Service
+	agents     *agentconfig.Service
 }
 
 func newRuntime(migrations fs.FS) *runtime {
-	return &runtime{git: gitadapter.New(), migrations: migrations}
+	return &runtime{git: gitadapter.New(), migrations: migrations, agents: agentconfig.NewService(agentconfigadapter.New())}
 }
 
 func (r *runtime) open(ctx context.Context, create bool) error {
@@ -107,6 +111,16 @@ func (r *runtime) Initialize(ctx context.Context, name *string) (project.Project
 		return project.Project{}, err
 	}
 	return r.projects.Initialize(ctx, r.gitContext, name)
+}
+
+// InitializeWithAgents initializes project memory and then attempts every requested agent configuration.
+func (r *runtime) InitializeWithAgents(ctx context.Context, name *string, agents []agentconfig.Agent) (project.Project, []agentconfig.Result, error) {
+	value, err := r.Initialize(ctx, name)
+	if err != nil {
+		return project.Project{}, nil, err
+	}
+	sharedMemoryPath := filepath.Dir(sqlite.PathFromGitCommonDir(r.gitContext.CommonDir))
+	return value, r.agents.Configure(ctx, agents, sharedMemoryPath), nil
 }
 
 func (r *runtime) ShowCurrent(ctx context.Context) (project.Project, error) {

@@ -128,6 +128,22 @@ operation remains isolated by project ID. The storage directory and database
 are created with permissions restricted to the current user. Normal commands
 open existing storage and do not initialize a project implicitly.
 
+Coding-agent sandboxes may treat that shared directory as external when they
+run from a linked worktree. Initialize with one or more explicit agent names to
+add the narrow `.happy-memory` directory to their persistent configuration:
+
+```text
+happy-memory init --configure-agent codex
+happy-memory init --configure-agent codex,claude-code,opencode
+```
+
+Supported names are `codex`, `claude-code`, and `opencode`. The flag is
+idempotent, trims whitespace, and ignores duplicate names. Agent configuration
+failures are returned as structured warnings without failing a successful
+project initialization, so the same `init` command can be retried with the
+required scoped authorization. Omitting the flag preserves the original
+initialization behavior and JSON response.
+
 ## Development
 
 ### Requirements

@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/jorgeluis594/happy-memory/internal/agentconfig"
 	"github.com/jorgeluis594/happy-memory/internal/buildinfo"
 	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
@@ -21,6 +22,7 @@ import (
 
 type projectService interface {
 	Initialize(context.Context, *string) (project.Project, error)
+	InitializeWithAgents(context.Context, *string, []agentconfig.Agent) (project.Project, []agentconfig.Result, error)
 	ShowCurrent(context.Context) (project.Project, error)
 	List(context.Context) ([]project.Project, error)
 }
@@ -83,19 +85,31 @@ func execute(ctx context.Context, args []string, input io.Reader, service projec
 	}})
 
 	if service != nil {
-		var name string
+		var name, configureAgent string
 		initCommand := &spf13cobra.Command{Use: "init", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
 			var requested *string
 			if command.Flags().Changed("name") {
 				requested = &name
 			}
-			value, err := service.Initialize(command.Context(), requested)
+			if !command.Flags().Changed("configure-agent") {
+				value, err := service.Initialize(command.Context(), requested)
+				if err != nil {
+					return err
+				}
+				return writeJSON(&output, successProject(value))
+			}
+			agents, err := agentconfig.ParseAgents(configureAgent)
+			if err != nil {
+				return project.NewError(project.CodeValidationError, err)
+			}
+			value, configurations, err := service.InitializeWithAgents(command.Context(), requested, agents)
 			if err != nil {
 				return err
 			}
-			return writeJSON(&output, successProject(value))
+			return writeJSON(&output, successProjectWithAgents(value, configurations))
 		}}
 		initCommand.Flags().StringVar(&name, "name", "", "project name")
+		initCommand.Flags().StringVar(&configureAgent, "configure-agent", "", "comma-separated agents to configure")
 
 		projectCommand := &spf13cobra.Command{Use: "project", Args: invalidArgs, RunE: invalidCommand}
 		projectCommand.AddCommand(&spf13cobra.Command{Use: "show", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
@@ -618,6 +632,16 @@ type projectSuccess struct {
 	Data projectJSON `json:"data"`
 }
 
+type projectWithAgentsJSON struct {
+	projectJSON
+	AgentConfigurations []agentconfig.Result `json:"agent_configurations"`
+}
+
+type projectWithAgentsSuccess struct {
+	OK   bool                  `json:"ok"`
+	Data projectWithAgentsJSON `json:"data"`
+}
+
 type projectList struct {
 	Projects []projectJSON `json:"projects"`
 }
@@ -628,6 +652,9 @@ type listSuccess struct {
 }
 
 func successProject(value project.Project) any { return projectSuccess{OK: true, Data: toJSON(value)} }
+func successProjectWithAgents(value project.Project, configurations []agentconfig.Result) any {
+	return projectWithAgentsSuccess{OK: true, Data: projectWithAgentsJSON{projectJSON: toJSON(value), AgentConfigurations: configurations}}
+}
 func writeJSON(output *bytes.Buffer, value any) error {
 	if err := json.NewEncoder(output).Encode(value); err != nil {
 		return fmt.Errorf("encode JSON: %w", err)

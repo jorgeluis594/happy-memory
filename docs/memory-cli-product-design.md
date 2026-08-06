@@ -86,7 +86,7 @@ During the POC:
 ### 3.4 Initialization
 
 ```text
-happy-memory init [--name <name>]
+happy-memory init [--name <name>] [--configure-agent <agent[,agent...]>]
 ```
 
 `init` is idempotent and must:
@@ -578,7 +578,7 @@ The search response identifies the algorithm with `ranking_version: 1`. Consumer
 ### 8.1 Commands
 
 ```text
-happy-memory init [--name <name>]
+happy-memory init [--name <name>] [--configure-agent <agent[,agent...]>]
 
 happy-memory create --input -
 happy-memory get <memory-id> [--include-deleted]
