@@ -54,7 +54,6 @@ type GitContext struct {
 
 // GitIdentity accesses project identity in Git configuration.
 type GitIdentity interface {
-	Resolve(context.Context) (GitContext, error)
 	ReadID(context.Context, GitContext) (string, bool, error)
 	WriteID(context.Context, GitContext, string) error
 	InferName(context.Context, GitContext) (string, error)
@@ -88,11 +87,7 @@ func NewService(git GitIdentity, repo Repository, clock Clock, ids IDGenerator) 
 }
 
 // Initialize creates or reconciles the current project.
-func (service *Service) Initialize(ctx context.Context, requestedName *string) (Project, error) {
-	gitContext, err := service.git.Resolve(ctx)
-	if err != nil {
-		return Project{}, err
-	}
+func (service *Service) Initialize(ctx context.Context, gitContext GitContext, requestedName *string) (Project, error) {
 	id, found, err := service.git.ReadID(ctx, gitContext)
 	if err != nil {
 		return Project{}, err
@@ -129,11 +124,7 @@ func (service *Service) Initialize(ctx context.Context, requestedName *string) (
 }
 
 // ShowCurrent returns the current initialized project without recreating it.
-func (service *Service) ShowCurrent(ctx context.Context) (Project, error) {
-	gitContext, err := service.git.Resolve(ctx)
-	if err != nil {
-		return Project{}, err
-	}
+func (service *Service) ShowCurrent(ctx context.Context, gitContext GitContext) (Project, error) {
 	id, found, err := service.git.ReadID(ctx, gitContext)
 	if err != nil {
 		return Project{}, err

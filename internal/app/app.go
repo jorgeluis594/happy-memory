@@ -30,26 +30,28 @@ type uuidGenerator struct{}
 func (uuidGenerator) New() string { return uuid.NewString() }
 
 type currentProjectResolver struct {
-	projects *project.Service
-	git      *gitadapter.Adapter
+	projects   *project.Service
+	gitContext project.GitContext
 }
 
 func (resolver currentProjectResolver) Current(ctx context.Context) (memory.ProjectContext, error) {
-	current, err := resolver.projects.ShowCurrent(ctx)
+	current, err := resolver.projects.ShowCurrent(ctx, resolver.gitContext)
 	if err != nil {
 		return memory.ProjectContext{}, err
 	}
-	gitContext, err := resolver.git.Resolve(ctx)
-	if err != nil {
-		return memory.ProjectContext{}, err
-	}
-	return memory.ProjectContext{ID: current.ID, WorktreeRoot: gitContext.WorktreeRoot}, nil
+	return memory.ProjectContext{ID: current.ID, WorktreeRoot: resolver.gitContext.WorktreeRoot}, nil
+}
+
+type gitAdapter interface {
+	project.GitIdentity
+	Resolve(context.Context) (project.GitContext, error)
 }
 
 // runtime defers all Git and SQLite work until a validated Cobra handler calls
 // a service method. This keeps invalid commands from creating local storage.
 type runtime struct {
-	git        *gitadapter.Adapter
+	git        gitAdapter
+	gitContext project.GitContext
 	migrations fs.FS
 	database   *sqlite.Database
 	projects   *project.Service
@@ -89,8 +91,9 @@ func (r *runtime) open(ctx context.Context, create bool) error {
 		r.database = nil
 		return storeError()
 	}
+	r.gitContext = gitContext
 	r.projects = project.NewService(r.git, sqlite.NewProjectRepository(r.database.GORM()), systemClock{}, uuidGenerator{})
-	resolver := currentProjectResolver{projects: r.projects, git: r.git}
+	resolver := currentProjectResolver{projects: r.projects, gitContext: gitContext}
 	r.memories = memory.NewService(resolver, sqlite.NewMemoryRepository(r.database.GORM()), systemClock{}, uuidGenerator{})
 	r.searches = search.NewService(resolver, sqlite.NewSearchRepository(r.database.GORM()))
 	return nil
@@ -103,14 +106,14 @@ func (r *runtime) Initialize(ctx context.Context, name *string) (project.Project
 	if err := r.open(ctx, true); err != nil {
 		return project.Project{}, err
 	}
-	return r.projects.Initialize(ctx, name)
+	return r.projects.Initialize(ctx, r.gitContext, name)
 }
 
 func (r *runtime) ShowCurrent(ctx context.Context) (project.Project, error) {
 	if err := r.open(ctx, false); err != nil {
 		return project.Project{}, err
 	}
-	return r.projects.ShowCurrent(ctx)
+	return r.projects.ShowCurrent(ctx, r.gitContext)
 }
 
 func (r *runtime) List(ctx context.Context) ([]project.Project, error) {
