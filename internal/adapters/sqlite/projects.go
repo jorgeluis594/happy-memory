@@ -41,43 +41,62 @@ func (r *ProjectRepository) Find(ctx context.Context, id string) (*project.Proje
 
 // Reconcile creates or updates a project only when values changed.
 func (r *ProjectRepository) Reconcile(ctx context.Context, id, name, path string, now time.Time) (project.Project, error) {
-	existing, err := r.Find(ctx, id)
-	if err != nil {
-		return project.Project{}, err
-	}
-	if existing == nil {
-		row := projectRow{ID: id, Name: name, LastKnownGitCommonDir: path, CreatedAt: formatTime(now), UpdatedAt: formatTime(now)}
-		if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
-			return project.Project{}, storeError(err)
+	var result project.Project
+	err := transaction(ctx, r.db, func(tx *gorm.DB) error {
+		var row projectRow
+		err := tx.Where("id = ?", id).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			row = projectRow{ID: id, Name: name, LastKnownGitCommonDir: path, CreatedAt: formatTime(now), UpdatedAt: formatTime(now)}
+			if createErr := tx.Create(&row).Error; createErr != nil {
+				return createErr
+			}
+		} else if err != nil {
+			return err
+		} else if row.Name != name || row.LastKnownGitCommonDir != path {
+			if updateErr := tx.Model(&projectRow{}).Where("id = ?", id).Updates(map[string]any{"name": name, "last_known_git_common_dir": path, "updated_at": formatTime(now)}).Error; updateErr != nil {
+				return updateErr
+			}
+			row.Name, row.LastKnownGitCommonDir, row.UpdatedAt = name, path, formatTime(now)
 		}
-		return row.project()
-	}
-	if existing.Name == name && existing.LastKnownGitCommonDir == path {
-		return *existing, nil
-	}
-	if err := r.db.WithContext(ctx).Model(&projectRow{}).Where("id = ?", id).Updates(map[string]any{"name": name, "last_known_git_common_dir": path, "updated_at": formatTime(now)}).Error; err != nil {
+		var convertErr error
+		result, convertErr = row.project()
+		return convertErr
+	})
+	if err != nil {
+		if project.Code(err) == storeBusyCode {
+			return project.Project{}, err
+		}
 		return project.Project{}, storeError(err)
 	}
-	existing.Name = name
-	existing.LastKnownGitCommonDir = path
-	existing.UpdatedAt = now.UTC()
-	return *existing, nil
+	return result, nil
 }
 
 // UpdatePath updates the last known Git common directory.
 func (r *ProjectRepository) UpdatePath(ctx context.Context, id, path string, now time.Time) (project.Project, error) {
-	result := r.db.WithContext(ctx).Model(&projectRow{}).Where("id = ?", id).Updates(map[string]any{"last_known_git_common_dir": path, "updated_at": formatTime(now)})
-	if result.Error != nil {
-		return project.Project{}, storeError(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return project.Project{}, project.NewError(project.CodeProjectNotInitialized, errors.New("project is not initialized"))
-	}
-	value, err := r.Find(ctx, id)
+	var value project.Project
+	err := transaction(ctx, r.db, func(tx *gorm.DB) error {
+		result := tx.Model(&projectRow{}).Where("id = ?", id).Updates(map[string]any{"last_known_git_common_dir": path, "updated_at": formatTime(now)})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return project.NewError(project.CodeProjectNotInitialized, errors.New("project is not initialized"))
+		}
+		var row projectRow
+		if queryErr := tx.Where("id = ?", id).Take(&row).Error; queryErr != nil {
+			return queryErr
+		}
+		var convertErr error
+		value, convertErr = row.project()
+		return convertErr
+	})
 	if err != nil {
-		return project.Project{}, err
+		if project.Code(err) == project.CodeProjectNotInitialized || project.Code(err) == storeBusyCode {
+			return project.Project{}, err
+		}
+		return project.Project{}, storeError(err)
 	}
-	return *value, nil
+	return value, nil
 }
 
 // List returns projects ordered by name and ID.

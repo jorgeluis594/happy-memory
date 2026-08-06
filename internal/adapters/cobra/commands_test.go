@@ -8,14 +8,70 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
+	"github.com/jorgeluis594/happy-memory/internal/search"
 )
+
+type diagnosticStub struct {
+	report diagnostic.Report
+	err    error
+}
+
+func (stub diagnosticStub) Doctor(context.Context) (diagnostic.Report, error) {
+	return stub.report, stub.err
+}
+
+func TestDoctorUsesExactJSONAndHelpIsValidationError(t *testing.T) {
+	report := diagnostic.Report{Healthy: true, DatabasePath: "/db", Checks: []diagnostic.Check{}}
+	output, err := ExecuteAll(context.Background(), []string{"doctor"}, nil, nil, nil, nil, diagnosticStub{report: report})
+	if err != nil || string(output) != "{\"ok\":true,\"data\":{\"healthy\":true,\"database_path\":\"/db\",\"checks\":[]}}\n" {
+		t.Fatalf("output=%s err=%v", output, err)
+	}
+	if output, err = Execute(context.Background(), []string{"--help"}, stubService{}); project.Code(err) != project.CodeValidationError || len(output) != 0 {
+		t.Fatalf("help output=%q err=%v", output, err)
+	}
+}
 
 type stubService struct{ value project.Project }
 
 func (stub stubService) Initialize(context.Context, *string) (project.Project, error) {
 	return stub.value, nil
+}
+
+type searchStub struct {
+	input    search.Input
+	response search.Response
+	err      error
+}
+
+func (s *searchStub) Search(_ context.Context, input search.Input) (search.Response, error) {
+	s.input = input
+	return s.response, s.err
+}
+
+func TestSearchCommandDefaultsFlagsAndExactJSON(t *testing.T) {
+	service := &searchStub{response: search.Response{RankingVersion: 1, Results: []search.Result{{Memory: memory.Memory{ID: "m1", Type: "decision", Title: "Git", Content: "Use worktrees", Importance: 5, Confidence: 4, Tags: []memory.Tag{{Name: "git"}, {Name: "worktrees"}}}, Score: search.Score{Final: 0.9, Text: 1, Importance: 1, Confidence: 0.75}}}}}
+	output, err := ExecuteWithServices(context.Background(), []string{"search", "git worktrees", "--type", "decision", "--tag", "Git", "--tag", "Worktrees", "--min-importance", "4", "--min-confidence", "3"}, bytes.NewReader(nil), stubService{}, &memoryStub{}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"ok":true,"data":{"ranking_version":1,"results":[{"id":"m1","type":"decision","title":"Git","content":"Use worktrees","importance":5,"confidence":4,"tags":["git","worktrees"],"score":{"final":0.9,"text":1,"importance":1,"confidence":0.75}}]}}` + "\n"
+	if string(output) != want {
+		t.Fatalf("output = %s", output)
+	}
+	if service.input.Limit != 10 || service.input.Type != "decision" || len(service.input.Tags) != 2 || service.input.MinImportance != 4 || service.input.MinConfidence != 3 {
+		t.Fatalf("input = %#v", service.input)
+	}
+}
+
+func TestSearchCommandRequiresOneQuery(t *testing.T) {
+	for _, args := range [][]string{{"search"}, {"search", "one", "two"}} {
+		if _, err := ExecuteWithServices(context.Background(), args, bytes.NewReader(nil), stubService{}, &memoryStub{}, &searchStub{}); err == nil {
+			t.Fatalf("expected validation for %v", args)
+		}
+	}
 }
 
 type memoryStub struct {

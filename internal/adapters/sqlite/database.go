@@ -32,12 +32,26 @@ type Database struct {
 // Open creates the application's private data directory and database file when
 // necessary, then opens the database with the required SQLite settings.
 func Open(ctx context.Context) (*Database, error) {
-	path, err := databasePath(runtime.GOOS, os.Getenv, os.UserHomeDir)
+	path, err := ResolvePath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve SQLite database path: %w", err)
 	}
 
 	return open(ctx, path)
+}
+
+// ResolvePath returns the absolute path used by the global database.
+func ResolvePath() (string, error) {
+	return databasePath(runtime.GOOS, os.Getenv, os.UserHomeDir)
+}
+
+// OpenReadOnly opens an existing database without creating files or changing
+// its journal mode. It is intended for non-destructive diagnostics.
+func OpenReadOnly(ctx context.Context, path string) (*Database, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("stat SQLite database %q: %w", path, err)
+	}
+	return openDatabase(ctx, path, readOnlyDataSourceName(path))
 }
 
 func open(ctx context.Context, path string) (*Database, error) {
@@ -56,7 +70,11 @@ func open(ctx context.Context, path string) (*Database, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open(glebarezsqlite.DriverName, dataSourceName(path))
+	return openDatabase(ctx, path, dataSourceName(path))
+}
+
+func openDatabase(ctx context.Context, path, source string) (*Database, error) {
+	sqlDB, err := sql.Open(glebarezsqlite.DriverName, source)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite database %q: %w", path, err)
 	}
@@ -108,7 +126,15 @@ func dataSourceName(path string) string {
 	query := make(url.Values)
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "journal_mode(WAL)")
-	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "busy_timeout(100)")
 
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: query.Encode()}).String()
+}
+
+func readOnlyDataSourceName(path string) string {
+	query := make(url.Values)
+	query.Add("mode", "ro")
+	query.Add("_pragma", "foreign_keys(ON)")
+	query.Add("_pragma", "busy_timeout(100)")
 	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: query.Encode()}).String()
 }

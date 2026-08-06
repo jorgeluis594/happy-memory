@@ -57,7 +57,7 @@ func NewMemoryRepository(db *gorm.DB) *MemoryRepository { return &MemoryReposito
 // Create writes a memory and all initial related records atomically.
 func (r *MemoryRepository) Create(ctx context.Context, record memory.CreateRecord) (memory.Memory, error) {
 	m := record.Memory
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := transaction(ctx, r.db, func(tx *gorm.DB) error {
 		row := toMemoryRow(m)
 		if err := tx.Create(&row).Error; err != nil {
 			var existing memoryRow
@@ -90,11 +90,7 @@ func (r *MemoryRepository) Create(ctx context.Context, record memory.CreateRecor
 		if err := tx.Create(&revisionRow{MemoryID: rev.MemoryID, ProjectID: rev.ProjectID, Version: rev.Version, Operation: rev.Operation, SnapshotJSON: string(rev.Snapshot), AgentName: rev.AgentName, AgentRole: rev.AgentRole, WorktreeRoot: rev.WorktreeRoot, CreatedAt: formatTime(rev.CreatedAt)}).Error; err != nil {
 			return memoryStoreError(err)
 		}
-		names := make([]string, len(m.Tags))
-		for i := range m.Tags {
-			names[i] = m.Tags[i].Name
-		}
-		if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content,tags) VALUES (?,?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content, strings.Join(names, " ")).Error; err != nil {
+		if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content) VALUES (?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content).Error; err != nil {
 			return memoryStoreError(err)
 		}
 		return nil
@@ -183,7 +179,7 @@ func (r *MemoryRepository) List(ctx context.Context, projectID string, f memory.
 // Mutate atomically applies a versioned state change, tags, revision, and FTS state.
 func (r *MemoryRepository) Mutate(ctx context.Context, record memory.MutationRecord) (memory.Memory, error) {
 	m := record.Memory
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := transaction(ctx, r.db, func(tx *gorm.DB) error {
 		row := toMemoryRow(m)
 		result := tx.Model(&memoryRow{}).Where("project_id = ? AND id = ? AND current_version = ?", m.ProjectID, m.ID, record.ExpectedVersion).Updates(map[string]any{
 			"current_version": row.CurrentVersion, "type": row.Type, "title": row.Title, "content": row.Content,
@@ -234,11 +230,7 @@ func (r *MemoryRepository) Mutate(ctx context.Context, record memory.MutationRec
 			return memoryStoreError(err)
 		}
 		if m.DeletedAt == nil {
-			names := make([]string, len(m.Tags))
-			for i := range m.Tags {
-				names[i] = m.Tags[i].Name
-			}
-			if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content,tags) VALUES (?,?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content, strings.Join(names, " ")).Error; err != nil {
+			if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content) VALUES (?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content).Error; err != nil {
 				return memoryStoreError(err)
 			}
 		}

@@ -10,8 +10,10 @@ import (
 	"io"
 	"time"
 
+	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
+	"github.com/jorgeluis594/happy-memory/internal/search"
 	spf13cobra "github.com/spf13/cobra"
 )
 
@@ -33,60 +35,98 @@ type memoryService interface {
 	TagsSearch(context.Context, string) ([]memory.Tag, error)
 }
 
+type searchService interface {
+	Search(context.Context, search.Input) (search.Response, error)
+}
+
+type diagnosticService interface {
+	Doctor(context.Context) (diagnostic.Report, error)
+}
+
 // Execute parses args and returns a buffered successful response.
 func Execute(ctx context.Context, args []string, service projectService) ([]byte, error) {
-	return execute(ctx, args, nil, service, nil)
+	return execute(ctx, args, nil, service, nil, nil, nil)
 }
 
 // ExecuteWithMemory parses all project and memory commands, including stdin input.
 func ExecuteWithMemory(ctx context.Context, args []string, input io.Reader, projects projectService, memories memoryService) ([]byte, error) {
-	return execute(ctx, args, input, projects, memories)
+	return execute(ctx, args, input, projects, memories, nil, nil)
 }
 
-func execute(ctx context.Context, args []string, input io.Reader, service projectService, memories memoryService) ([]byte, error) {
+// ExecuteWithServices parses all commands with memory and search services.
+func ExecuteWithServices(ctx context.Context, args []string, input io.Reader, projects projectService, memories memoryService, searches searchService) ([]byte, error) {
+	return execute(ctx, args, input, projects, memories, searches, nil)
+}
+
+// ExecuteAll parses every command, including global diagnostics.
+func ExecuteAll(ctx context.Context, args []string, input io.Reader, projects projectService, memories memoryService, searches searchService, diagnostics diagnosticService) ([]byte, error) {
+	return execute(ctx, args, input, projects, memories, searches, diagnostics)
+}
+
+func execute(ctx context.Context, args []string, input io.Reader, service projectService, memories memoryService, searches searchService, diagnostics diagnosticService) ([]byte, error) {
 	var output bytes.Buffer
 	root := &spf13cobra.Command{Use: "happy-memory", SilenceUsage: true, SilenceErrors: true, Args: invalidArgs, RunE: invalidCommand}
 	root.SetOut(&output)
 	root.SetErr(&output)
 	root.SetArgs(args)
+	root.SetHelpFunc(func(*spf13cobra.Command, []string) {})
+	root.SetUsageFunc(func(*spf13cobra.Command) error { return errors.New("invalid input") })
+	root.SetHelpCommand(&spf13cobra.Command{Use: "help", Args: invalidArgs, RunE: invalidCommand})
 
-	var name string
-	initCommand := &spf13cobra.Command{Use: "init", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
-		var requested *string
-		if command.Flags().Changed("name") {
-			requested = &name
-		}
-		value, err := service.Initialize(command.Context(), requested)
-		if err != nil {
-			return err
-		}
-		return writeJSON(&output, successProject(value))
-	}}
-	initCommand.Flags().StringVar(&name, "name", "", "project name")
+	if service != nil {
+		var name string
+		initCommand := &spf13cobra.Command{Use: "init", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
+			var requested *string
+			if command.Flags().Changed("name") {
+				requested = &name
+			}
+			value, err := service.Initialize(command.Context(), requested)
+			if err != nil {
+				return err
+			}
+			return writeJSON(&output, successProject(value))
+		}}
+		initCommand.Flags().StringVar(&name, "name", "", "project name")
 
-	projectCommand := &spf13cobra.Command{Use: "project", Args: invalidArgs, RunE: invalidCommand}
-	projectCommand.AddCommand(&spf13cobra.Command{Use: "show", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
-		value, err := service.ShowCurrent(command.Context())
-		if err != nil {
-			return err
-		}
-		return writeJSON(&output, successProject(value))
-	}})
-	projectsCommand := &spf13cobra.Command{Use: "projects", Args: invalidArgs, RunE: invalidCommand}
-	projectsCommand.AddCommand(&spf13cobra.Command{Use: "list", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
-		values, err := service.List(command.Context())
-		if err != nil {
-			return err
-		}
-		items := make([]projectJSON, 0, len(values))
-		for _, value := range values {
-			items = append(items, toJSON(value))
-		}
-		return writeJSON(&output, listSuccess{OK: true, Data: projectList{Projects: items}})
-	}})
-	root.AddCommand(initCommand, projectCommand, projectsCommand)
+		projectCommand := &spf13cobra.Command{Use: "project", Args: invalidArgs, RunE: invalidCommand}
+		projectCommand.AddCommand(&spf13cobra.Command{Use: "show", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
+			value, err := service.ShowCurrent(command.Context())
+			if err != nil {
+				return err
+			}
+			return writeJSON(&output, successProject(value))
+		}})
+		projectsCommand := &spf13cobra.Command{Use: "projects", Args: invalidArgs, RunE: invalidCommand}
+		projectsCommand.AddCommand(&spf13cobra.Command{Use: "list", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
+			values, err := service.List(command.Context())
+			if err != nil {
+				return err
+			}
+			items := make([]projectJSON, 0, len(values))
+			for _, value := range values {
+				items = append(items, toJSON(value))
+			}
+			return writeJSON(&output, listSuccess{OK: true, Data: projectList{Projects: items}})
+		}})
+		root.AddCommand(initCommand, projectCommand, projectsCommand)
+	}
 	if memories != nil {
 		addMemoryCommands(root, &output, input, memories)
+	}
+	if searches != nil {
+		addSearchCommand(root, &output, searches)
+	}
+	if diagnostics != nil {
+		root.AddCommand(&spf13cobra.Command{Use: "doctor", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
+			report, err := diagnostics.Doctor(command.Context())
+			if err != nil {
+				return err
+			}
+			return writeJSON(&output, struct {
+				OK   bool              `json:"ok"`
+				Data diagnostic.Report `json:"data"`
+			}{OK: true, Data: report})
+		}})
 	}
 
 	if err := root.ExecuteContext(ctx); err != nil {
@@ -98,9 +138,71 @@ func execute(ctx context.Context, args []string, input io.Reader, service projec
 		if errors.As(err, &memoryError) {
 			return nil, err
 		}
+		var diagnosticError *diagnostic.UnhealthyError
+		if errors.As(err, &diagnosticError) {
+			return nil, err
+		}
+		return nil, project.NewError(project.CodeValidationError, errors.New("invalid input"))
+	}
+	if output.Len() == 0 {
 		return nil, project.NewError(project.CodeValidationError, errors.New("invalid input"))
 	}
 	return output.Bytes(), nil
+}
+
+func addSearchCommand(root *spf13cobra.Command, output *bytes.Buffer, service searchService) {
+	var kind string
+	var tags []string
+	var minImportance, minConfidence, limit int
+	command := &spf13cobra.Command{Use: "search <query>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+		response, err := service.Search(command.Context(), search.Input{Query: args[0], Type: kind, Tags: tags, MinImportance: minImportance, MinConfidence: minConfidence, Limit: limit})
+		if err != nil {
+			return err
+		}
+		results := make([]searchResultJSON, 0, len(response.Results))
+		for _, result := range response.Results {
+			names := make([]string, 0, len(result.Memory.Tags))
+			for _, tag := range result.Memory.Tags {
+				names = append(names, tag.Name)
+			}
+			results = append(results, searchResultJSON{ID: result.Memory.ID, Type: result.Memory.Type, Title: result.Memory.Title, Content: result.Memory.Content, Importance: result.Memory.Importance, Confidence: result.Memory.Confidence, Tags: names, Score: searchScoreJSON{Final: result.Score.Final, Text: result.Score.Text, Importance: result.Score.Importance, Confidence: result.Score.Confidence}})
+		}
+		return writeJSON(output, searchSuccess{OK: true, Data: searchData{RankingVersion: response.RankingVersion, Results: results}})
+	}}
+	command.Flags().StringVar(&kind, "type", "", "memory type")
+	command.Flags().StringArrayVar(&tags, "tag", nil, "required tag (repeatable)")
+	command.Flags().IntVar(&minImportance, "min-importance", 0, "minimum importance")
+	command.Flags().IntVar(&minConfidence, "min-confidence", 0, "minimum confidence")
+	command.Flags().IntVar(&limit, "limit", 10, "maximum results")
+	root.AddCommand(command)
+}
+
+type searchScoreJSON struct {
+	Final      float64 `json:"final"`
+	Text       float64 `json:"text"`
+	Importance float64 `json:"importance"`
+	Confidence float64 `json:"confidence"`
+}
+
+type searchResultJSON struct {
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Title      string          `json:"title"`
+	Content    string          `json:"content"`
+	Importance int             `json:"importance"`
+	Confidence int             `json:"confidence"`
+	Tags       []string        `json:"tags"`
+	Score      searchScoreJSON `json:"score"`
+}
+
+type searchData struct {
+	RankingVersion int                `json:"ranking_version"`
+	Results        []searchResultJSON `json:"results"`
+}
+
+type searchSuccess struct {
+	OK   bool       `json:"ok"`
+	Data searchData `json:"data"`
 }
 
 func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.Reader, service memoryService) {

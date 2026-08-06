@@ -39,7 +39,7 @@ func TestOpenCreatesConfiguredEmptyDatabase(t *testing.T) {
 
 	assertPragma(t, database, "foreign_keys", 1)
 	assertPragma(t, database, "journal_mode", "wal")
-	assertPragma(t, database, "busy_timeout", 5000)
+	assertPragma(t, database, "busy_timeout", 100)
 }
 
 func TestOpenReusesExistingDatabase(t *testing.T) {

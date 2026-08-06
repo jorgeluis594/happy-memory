@@ -14,8 +14,10 @@ import (
 	commandadapter "github.com/jorgeluis594/happy-memory/internal/adapters/cobra"
 	gitadapter "github.com/jorgeluis594/happy-memory/internal/adapters/git"
 	"github.com/jorgeluis594/happy-memory/internal/adapters/sqlite"
+	"github.com/jorgeluis594/happy-memory/internal/diagnostic"
 	"github.com/jorgeluis594/happy-memory/internal/memory"
 	"github.com/jorgeluis594/happy-memory/internal/project"
+	"github.com/jorgeluis594/happy-memory/internal/search"
 )
 
 type systemClock struct{}
@@ -50,13 +52,30 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 // RunWithInput composes one invocation with an explicit stdin stream.
 func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	database, err := sqlite.Open(ctx)
+	path, err := sqlite.ResolvePath()
 	if err != nil {
 		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
 	}
 	migrations, subErr := fs.Sub(sqlite.EmbeddedMigrations, "migrations")
 	if subErr != nil {
-		_ = database.Close()
+		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
+	}
+	if len(args) > 0 && args[0] == "doctor" {
+		diagnostics := diagnostic.NewService(path, sqlite.NewDiagnosticChecker(migrations))
+		response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, nil, nil, nil, diagnostics)
+		if executeErr != nil {
+			return writeFailure(stderr, executeErr)
+		}
+		if _, err = stdout.Write(response); err != nil {
+			return 1
+		}
+		return 0
+	}
+	if err = sqlite.ValidateExistingSchema(ctx, path, migrations); err != nil {
+		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
+	}
+	database, err := sqlite.Open(ctx)
+	if err != nil {
 		return writeFailure(stderr, project.NewError(project.CodeStoreError, errors.New("storage operation failed")))
 	}
 	if err := sqlite.Migrate(ctx, database.SQL(), migrations); err != nil {
@@ -66,7 +85,8 @@ func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	git := gitadapter.New()
 	projectService := project.NewService(git, sqlite.NewProjectRepository(database.GORM()), systemClock{}, uuidGenerator{})
 	memoryService := memory.NewService(currentProjectResolver{projects: projectService, git: git}, sqlite.NewMemoryRepository(database.GORM()), systemClock{}, uuidGenerator{})
-	response, executeErr := commandadapter.ExecuteWithMemory(ctx, args, stdin, projectService, memoryService)
+	searchService := search.NewService(currentProjectResolver{projects: projectService, git: git}, sqlite.NewSearchRepository(database.GORM()))
+	response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, projectService, memoryService, searchService, nil)
 	closeErr := database.Close()
 	if executeErr != nil {
 		return writeFailure(stderr, executeErr)
@@ -81,35 +101,11 @@ func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, s
 }
 
 func writeFailure(output io.Writer, err error) int {
-	code := project.Code(err)
-	details := map[string]any{}
-	var memoryError *memory.Error
-	if errors.As(err, &memoryError) {
-		code = memoryError.Code
-		details = memory.ErrorDetails(err)
-	}
-	message := map[string]string{
-		project.CodeGitRepositoryNotFound: "git repository not found",
-		project.CodeProjectNotInitialized: "project is not initialized",
-		project.CodeValidationError:       "invalid input",
-		project.CodeStoreError:            "storage operation failed",
-		memory.CodeNotFound:               "memory not found",
-		memory.CodeDuplicate:              "duplicate memory",
-		memory.CodeVersionConflict:        "version conflict",
-	}[code]
-	if message == "" {
-		code, message = project.CodeStoreError, "storage operation failed"
-	}
-	type errorBody struct {
-		Code    string         `json:"code"`
-		Message string         `json:"message"`
-		Details map[string]any `json:"details"`
-	}
 	type failure struct {
-		OK    bool      `json:"ok"`
-		Error errorBody `json:"error"`
+		OK    bool        `json:"ok"`
+		Error PublicError `json:"error"`
 	}
-	payload := failure{OK: false, Error: errorBody{Code: code, Message: message, Details: details}}
+	payload := failure{OK: false, Error: publicError(err)}
 	_ = json.NewEncoder(output).Encode(payload)
 	return 1
 }
