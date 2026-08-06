@@ -1,6 +1,8 @@
 ---
 name: create-persistence-migration
 description: "Create and validate a versioned SQLite migration with Goose in happy-memory from a complete migration specification supplied by the calling agent. Use when an agent requests a concrete migration with the required Up schema change, Down behavior, data transformations, constraints, and indexes already defined."
+metadata:
+  internal: true
 ---
 
 # Create a Persistence Migration

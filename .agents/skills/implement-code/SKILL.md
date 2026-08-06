@@ -1,6 +1,8 @@
 ---
 name: implement-code
 description: "Implement, modify, refactor, or fix code in happy-memory through validated incremental groups of at most five production code files. Use whenever Codex will create, edit, delete, or otherwise touch production code, including feature work, refactoring, bug fixes, and code maintenance."
+metadata:
+  internal: true
 ---
 
 # Implement Code Incrementally
