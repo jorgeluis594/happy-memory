@@ -204,7 +204,11 @@ Read operations may surface these stable codes:
 | `STORE_BUSY` | Storage remained busy after bounded retries |
 | `STORE_ERROR` | Storage, schema, migration, or internal read failed |
 
-Treat a missing `happy-memory` executable as a local execution failure rather than a CLI JSON error. Do not run initialization or mutation commands to recover from any read failure.
+Treat a missing `happy-memory` executable as a local execution failure rather than a CLI JSON error.
+
+When a search fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init` once. If initialization succeeds, repeat the original search with exactly the same query and filters. The initialization command does not count toward the three-search limit, and the repeated command completes the original search attempt. If initialization fails, preserve and return its error without repeating the search. If the repeated search fails, preserve and return that search error.
+
+Do not initialize for any other read failure. Never use any other mutation command as recovery.
 
 ## Examples
 
