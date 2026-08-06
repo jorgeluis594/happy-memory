@@ -24,7 +24,7 @@ El usuario puede descubrir, buscar y reutilizar etiquetas normalizadas, con desc
 - Conservación de la descripción existente cuando otra memoria vuelve a usar la etiqueta.
 - Aislamiento de etiquetas y asociaciones por `project_id`.
 - `happy-memory tags list`.
-- `happy-memory tags search <query>` sobre nombre y descripción.
+- `happy-memory tags search <query> [--limit <n>]` sobre nombre y descripción, con límite predeterminado `10` y rango válido de `1` a `100`.
 - Conteo de memorias activas asociadas a cada etiqueta.
 - Orden de búsqueda por conteo activo y nombre normalizado.
 - Integración con los filtros de etiquetas de `list` y `search`.
@@ -49,9 +49,10 @@ El usuario puede descubrir, buscar y reutilizar etiquetas normalizadas, con desc
 8. El borrado lógico de una memoria reduce sus conteos activos; restaurarla vuelve a incrementarlos.
 9. `tags search` realiza una coincidencia de texto sin distinguir mayúsculas sobre nombre y descripción.
 10. `tags search` ordena primero por cantidad de memorias activas descendente y después por nombre normalizado ascendente.
-11. Una asociación que intentase unir una memoria y una etiqueta de proyectos distintos es rechazada y no deja cambios parciales.
-12. Cuando un filtro repite `--tag`, solamente coinciden memorias que poseen todas las etiquetas solicitadas.
-13. Las respuestas nunca incluyen etiquetas de otro proyecto, aunque el texto buscado coincida exactamente.
+11. `tags search` devuelve como máximo `10` resultados por defecto, acepta `--limit` entre `1` y `100` y aplica el límite después del ordenamiento; `tags list` permanece ilimitado.
+12. Una asociación que intentase unir una memoria y una etiqueta de proyectos distintos es rechazada y no deja cambios parciales.
+13. Cuando un filtro repite `--tag`, solamente coinciden memorias que poseen todas las etiquetas solicitadas.
+14. Las respuestas nunca incluyen etiquetas de otro proyecto, aunque el texto buscado coincida exactamente.
 
 ## Escenario integral de validación
 

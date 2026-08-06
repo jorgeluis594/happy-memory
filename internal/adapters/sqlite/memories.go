@@ -281,13 +281,13 @@ func (r *MemoryRepository) Revision(ctx context.Context, projectID, id string, v
 
 // ListTags returns the complete vocabulary for one project.
 func (r *MemoryRepository) ListTags(ctx context.Context, projectID string) ([]memory.Tag, error) {
-	return r.queryTags(ctx, projectID, "")
+	return r.queryTags(ctx, projectID, "", 0)
 }
 
 // SearchTags returns project tags matching a literal case-insensitive query.
-func (r *MemoryRepository) SearchTags(ctx context.Context, projectID, query string) ([]memory.Tag, error) {
+func (r *MemoryRepository) SearchTags(ctx context.Context, projectID, query string, limit int) ([]memory.Tag, error) {
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
-	return r.queryTags(ctx, projectID, "%"+escaped+"%")
+	return r.queryTags(ctx, projectID, "%"+escaped+"%", limit)
 }
 
 type vocabularyRow struct {
@@ -296,7 +296,7 @@ type vocabularyRow struct {
 	ActiveMemoryCount                              int
 }
 
-func (r *MemoryRepository) queryTags(ctx context.Context, projectID, pattern string) ([]memory.Tag, error) {
+func (r *MemoryRepository) queryTags(ctx context.Context, projectID, pattern string, limit int) ([]memory.Tag, error) {
 	query := r.db.WithContext(ctx).Table("tags AS t").
 		Select("t.id,t.name,t.normalized_name,t.description,t.created_at,t.updated_at,count(m.id) AS active_memory_count").
 		Joins("LEFT JOIN memory_tags AS mt ON mt.project_id = t.project_id AND mt.tag_id = t.id").
@@ -309,7 +309,7 @@ func (r *MemoryRepository) queryTags(ctx context.Context, projectID, pattern str
 	if pattern == "" {
 		query = query.Order("t.normalized_name ASC")
 	} else {
-		query = query.Order("active_memory_count DESC").Order("t.normalized_name ASC")
+		query = query.Order("active_memory_count DESC").Order("t.normalized_name ASC").Limit(limit)
 	}
 	var rows []vocabularyRow
 	if err := query.Scan(&rows).Error; err != nil {

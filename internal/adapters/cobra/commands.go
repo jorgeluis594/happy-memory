@@ -34,7 +34,7 @@ type memoryService interface {
 	List(context.Context, memory.ListFilter) ([]memory.Memory, error)
 	History(context.Context, string) ([]memory.Revision, error)
 	TagsList(context.Context) ([]memory.Tag, error)
-	TagsSearch(context.Context, string) ([]memory.Tag, error)
+	TagsSearch(context.Context, string, int) ([]memory.Tag, error)
 }
 
 type searchService interface {
@@ -358,6 +358,15 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 		return writeJSON(output, historySuccess{OK: true, Data: historyData{Revisions: items}})
 	}}
 	tagsCommand := &spf13cobra.Command{Use: "tags", Args: invalidArgs, RunE: invalidCommand}
+	var tagsSearchLimit int
+	tagsSearchCommand := &spf13cobra.Command{Use: "search <query>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
+		values, err := service.TagsSearch(command.Context(), args[0], tagsSearchLimit)
+		if err != nil {
+			return err
+		}
+		return writeJSON(output, tagListSuccess{OK: true, Data: tagListData{Tags: toVocabularyJSON(values)}})
+	}}
+	tagsSearchCommand.Flags().IntVar(&tagsSearchLimit, "limit", 10, "maximum results")
 	tagsCommand.AddCommand(
 		&spf13cobra.Command{Use: "list", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
 			values, err := service.TagsList(command.Context())
@@ -366,13 +375,7 @@ func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.
 			}
 			return writeJSON(output, tagListSuccess{OK: true, Data: tagListData{Tags: toVocabularyJSON(values)}})
 		}},
-		&spf13cobra.Command{Use: "search <query>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
-			values, err := service.TagsSearch(command.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			return writeJSON(output, tagListSuccess{OK: true, Data: tagListData{Tags: toVocabularyJSON(values)}})
-		}},
+		tagsSearchCommand,
 	)
 	root.AddCommand(batchCommand, createCommand, updateCommand, deleteCommand, restoreCommand, getCommand, listCommand, historyCommand, tagsCommand)
 }

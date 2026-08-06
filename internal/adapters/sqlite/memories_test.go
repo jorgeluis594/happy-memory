@@ -114,13 +114,17 @@ func TestMemoryRepositoryReusesCanonicalTagAndFiltersWithAND(t *testing.T) {
 	if !strings.Contains(snapshot, `"id":"go-id"`) {
 		t.Fatalf("snapshot did not use canonical tag: %s", snapshot)
 	}
-	tags, err := repo.SearchTags(context.Background(), "p1", "language")
+	tags, err := repo.SearchTags(context.Background(), "p1", "language", 10)
 	if err != nil || len(tags) != 1 || tags[0].ID != "go-id" || tags[0].ActiveMemoryCount != 2 {
 		t.Fatalf("searched tags=%#v err=%v", tags, err)
 	}
-	tags, err = repo.SearchTags(context.Background(), "p1", "a")
+	tags, err = repo.SearchTags(context.Background(), "p1", "a", 10)
 	if err != nil || len(tags) != 2 || tags[0].ID != "go-id" || tags[1].ID != "db-id" {
 		t.Fatalf("ordered tags=%#v err=%v", tags, err)
+	}
+	tags, err = repo.SearchTags(context.Background(), "p1", "a", 1)
+	if err != nil || len(tags) != 1 || tags[0].ID != "go-id" {
+		t.Fatalf("limited ordered tags=%#v err=%v", tags, err)
 	}
 	otherProjectTag := memory.Tag{ID: "other-go", Name: "Go", NormalizedName: "go", CreatedAt: stamp, UpdatedAt: stamp}
 	if _, err = repo.Create(context.Background(), memoryRecord("p2-memory", "p2", strings64("z"), "other", otherProjectTag)); err != nil {

@@ -46,8 +46,8 @@ func (*repoStub) History(context.Context, string, string) ([]Revision, error) { 
 func (*repoStub) Revision(context.Context, string, string, int) (Revision, error) {
 	return Revision{}, nil
 }
-func (*repoStub) ListTags(context.Context, string) ([]Tag, error)           { return nil, nil }
-func (*repoStub) SearchTags(context.Context, string, string) ([]Tag, error) { return nil, nil }
+func (*repoStub) ListTags(context.Context, string) ([]Tag, error)                { return nil, nil }
+func (*repoStub) SearchTags(context.Context, string, string, int) ([]Tag, error) { return nil, nil }
 
 func TestCreateNormalizesAndBuildsInitialRevision(t *testing.T) {
 	stamp := time.Date(2026, 8, 5, 12, 0, 0, 987, time.FixedZone("x", -5*60*60))
@@ -144,7 +144,9 @@ func (r *lifecycleRepo) Get(_ context.Context, projectID, id string, includeDele
 }
 func (*lifecycleRepo) List(context.Context, string, ListFilter) ([]Memory, error) { return nil, nil }
 func (*lifecycleRepo) ListTags(context.Context, string) ([]Tag, error)            { return nil, nil }
-func (*lifecycleRepo) SearchTags(context.Context, string, string) ([]Tag, error)  { return nil, nil }
+func (*lifecycleRepo) SearchTags(context.Context, string, string, int) ([]Tag, error) {
+	return nil, nil
+}
 func (r *lifecycleRepo) Mutate(_ context.Context, record MutationRecord) (Memory, error) {
 	if r.current.Version != record.ExpectedVersion {
 		return Memory{}, checkVersion(r.current, record.ExpectedVersion)
@@ -230,9 +232,26 @@ func TestTagInputFormatsNormalizationAndSearchValidation(t *testing.T) {
 			t.Fatalf("accepted %s", body)
 		}
 	}
-	service := NewService(projectStub{}, &repoStub{}, clockStub{}, &idsStub{})
-	if ErrorCode(func() error { _, err := service.TagsSearch(context.Background(), "  "); return err }()) != CodeValidationError {
+	projects := &countingProjectStub{}
+	service := NewService(projects, &repoStub{}, clockStub{}, &idsStub{})
+	if ErrorCode(func() error { _, err := service.TagsSearch(context.Background(), "  ", 10); return err }()) != CodeValidationError {
 		t.Fatal("empty tag query accepted")
+	}
+	for _, limit := range []int{0, -1, 101} {
+		if ErrorCode(func() error { _, err := service.TagsSearch(context.Background(), "tag", limit); return err }()) != CodeValidationError {
+			t.Fatalf("invalid tag search limit accepted: %d", limit)
+		}
+	}
+	if projects.calls != 0 {
+		t.Fatalf("project resolved during validation: %d calls", projects.calls)
+	}
+	for _, limit := range []int{1, 100} {
+		if _, err := service.TagsSearch(context.Background(), "tag", limit); err != nil {
+			t.Fatalf("valid tag search limit rejected: %d: %v", limit, err)
+		}
+	}
+	if projects.calls != 2 {
+		t.Fatalf("valid searches resolved project %d times", projects.calls)
 	}
 }
 

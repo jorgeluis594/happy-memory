@@ -82,6 +82,7 @@ type memoryStub struct {
 	filter     memory.ListFilter
 	tagValues  []memory.Tag
 	tagQuery   string
+	tagLimit   int
 	err        error
 }
 
@@ -112,8 +113,9 @@ func (s *memoryStub) History(context.Context, string) ([]memory.Revision, error)
 func (s *memoryStub) TagsList(context.Context) ([]memory.Tag, error) {
 	return s.tagValues, s.err
 }
-func (s *memoryStub) TagsSearch(_ context.Context, query string) ([]memory.Tag, error) {
+func (s *memoryStub) TagsSearch(_ context.Context, query string, limit int) ([]memory.Tag, error) {
 	s.tagQuery = query
+	s.tagLimit = limit
 	return s.tagValues, s.err
 }
 func (stub stubService) ShowCurrent(context.Context) (project.Project, error) { return stub.value, nil }
@@ -167,8 +169,14 @@ func TestTagVocabularyCommandsUseExactJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "{\"ok\":true,\"data\":{\"tags\":[{\"id\":\"tag-id\",\"name\":\"Git\",\"normalized_name\":\"git\",\"description\":\"Git operations\",\"created_at\":\"2026-08-05T12:00:00Z\",\"updated_at\":\"2026-08-05T12:00:00Z\",\"active_memory_count\":2}]}}\n"
-	if string(output) != want || service.tagQuery != "operations" {
-		t.Fatalf("output=%s query=%q", output, service.tagQuery)
+	if string(output) != want || service.tagQuery != "operations" || service.tagLimit != 10 {
+		t.Fatalf("output=%s query=%q limit=%d", output, service.tagQuery, service.tagLimit)
+	}
+	if _, err = ExecuteWithMemory(context.Background(), []string{"tags", "search", "operations", "--limit", "3"}, bytes.NewReader(nil), stubService{}, service); err != nil || service.tagLimit != 3 {
+		t.Fatalf("explicit limit=%d err=%v", service.tagLimit, err)
+	}
+	if _, err = ExecuteWithMemory(context.Background(), []string{"tags", "search", "operations", "--limit", "many"}, bytes.NewReader(nil), stubService{}, service); project.Code(err) != project.CodeValidationError {
+		t.Fatalf("non-integer limit error=%v", err)
 	}
 	output, err = ExecuteWithMemory(context.Background(), []string{"tags", "list"}, bytes.NewReader(nil), stubService{}, &memoryStub{})
 	if err != nil || string(output) != "{\"ok\":true,\"data\":{\"tags\":[]}}\n" {

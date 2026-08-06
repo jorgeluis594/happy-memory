@@ -65,7 +65,7 @@ Los demás comandos solo abren una base existente y nunca crean almacenamiento i
 | `happy-memory restore <memory-id> --version <n> --expected-version <n>` | 04 |
 | `happy-memory history <memory-id>` | 04 |
 | `happy-memory tags list` | 05 |
-| `happy-memory tags search <query>` | 05 |
+| `happy-memory tags search <query> [--limit <n>]` | 05 |
 | `happy-memory search <query> [filters]` | 06 |
 | `happy-memory doctor` | 07 |
 

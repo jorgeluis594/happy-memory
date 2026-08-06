@@ -183,11 +183,11 @@ func (r *runtime) TagsList(ctx context.Context) ([]memory.Tag, error) {
 	return r.memories.TagsList(ctx)
 }
 
-func (r *runtime) TagsSearch(ctx context.Context, query string) ([]memory.Tag, error) {
+func (r *runtime) TagsSearch(ctx context.Context, query string, limit int) ([]memory.Tag, error) {
 	if err := r.open(ctx, false); err != nil {
 		return nil, err
 	}
-	return r.memories.TagsSearch(ctx, query)
+	return r.memories.TagsSearch(ctx, query, limit)
 }
 
 func (r *runtime) Search(ctx context.Context, input search.Input) (search.Response, error) {

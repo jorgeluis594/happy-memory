@@ -237,7 +237,7 @@ type Repository interface {
 	History(context.Context, string, string) ([]Revision, error)
 	Revision(context.Context, string, string, int) (Revision, error)
 	ListTags(context.Context, string) ([]Tag, error)
-	SearchTags(context.Context, string, string) ([]Tag, error)
+	SearchTags(context.Context, string, string, int) ([]Tag, error)
 }
 
 // ProjectContext identifies the current project and worktree.
@@ -546,16 +546,16 @@ func (s *Service) TagsList(ctx context.Context) ([]Tag, error) {
 }
 
 // TagsSearch returns project tags matching name or description.
-func (s *Service) TagsSearch(ctx context.Context, query string) ([]Tag, error) {
+func (s *Service) TagsSearch(ctx context.Context, query string, limit int) ([]Tag, error) {
 	query = strings.TrimSpace(query)
-	if query == "" {
+	if query == "" || limit < 1 || limit > 100 {
 		return nil, validation()
 	}
 	p, err := s.projects.Current(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.SearchTags(ctx, p.ID, query)
+	return s.repo.SearchTags(ctx, p.ID, query, limit)
 }
 func (s *Service) current(ctx context.Context, id string) (ProjectContext, Memory, error) {
 	p, err := s.projects.Current(ctx)

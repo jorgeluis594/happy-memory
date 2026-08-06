@@ -461,7 +461,7 @@ happy-memory history <memory-id>
 
 ```text
 happy-memory tags list
-happy-memory tags search <query>
+happy-memory tags search <query> [--limit <n>]
 ```
 
 The response includes at least:
@@ -473,7 +473,7 @@ The response includes at least:
 
 This lets a consumer reuse the existing vocabulary before creating tags.
 
-`tags search` performs a case-insensitive text match over the name and description. It sorts first by active memory count and then by normalized name.
+`tags search` performs a case-insensitive text match over the name and description. It sorts first by active memory count and then by normalized name, and returns at most `--limit` results. The limit defaults to `10` and accepts values from `1` through `100`. `tags list` remains unlimited.
 
 ## 7. Search and ranking
 
