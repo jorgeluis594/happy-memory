@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -157,6 +158,21 @@ func TestBatchCommandUsesStrictSchemaAndReturnsOrderedItemErrors(t *testing.T) {
 		if _, err := ExecuteWithMemory(context.Background(), []string{"batch", "--input", "-"}, bytes.NewBufferString(invalid), stubService{}, service); project.Code(err) != project.CodeValidationError {
 			t.Fatalf("accepted %s: %v", invalid, err)
 		}
+	}
+}
+
+func TestBatchCommandIncludesStoreErrorRootCause(t *testing.T) {
+	storeErr := memory.NewError(memory.CodeStoreError, fmt.Errorf("storage operation failed: %w", errors.New("constraint failed")))
+	service := &memoryStub{batch: memory.BatchResponse{Total: 1, Failed: 1, Results: []memory.BatchResult{{Index: 0, Operation: "delete", Err: storeErr}}}}
+	body := `{"operations":[{"operation":"delete","memory_id":"28fef1e4-42c5-43ca-a0c8-0c731797c06f","expected_version":1}]}`
+
+	output, err := ExecuteWithMemory(context.Background(), []string{"batch", "--input", "-"}, bytes.NewBufferString(body), stubService{}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"ok\":true,\"data\":{\"summary\":{\"total\":1,\"succeeded\":0,\"failed\":1},\"results\":[{\"index\":0,\"operation\":\"delete\",\"ok\":false,\"error\":{\"code\":\"STORE_ERROR\",\"message\":\"storage operation failed\",\"details\":{\"cause\":\"constraint failed\"}}}]}}\n"
+	if string(output) != want {
+		t.Fatalf("output=%s", output)
 	}
 }
 
