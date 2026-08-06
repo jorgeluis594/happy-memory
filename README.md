@@ -132,7 +132,7 @@ open existing storage and do not initialize a project implicitly.
 
 ### Requirements
 
-- Go 1.26
+- Go 1.26.1 or later
 - Git
 - Make
 
