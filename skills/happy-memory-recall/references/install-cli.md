@@ -1,6 +1,6 @@
 # Install the happy-memory CLI
 
-Use these steps only after a command fails because the `happy-memory` executable is missing or cannot be found on `PATH`.
+Use these steps only after a command fails because the `happy-memory` executable is missing or cannot be found on `PATH`. Install the CLI, verify it, and then retry the original command. Attempt this recovery only once per retrieval.
 
 ## Linux and macOS
 
@@ -46,4 +46,8 @@ Run:
 happy-memory version
 ```
 
-Continue with the skill only after this command succeeds.
+Continue with the skill only after this command succeeds. If the current shell
+does not see the updated `PATH`, invoke the installed executable directly from
+the platform-specific default directory documented above. If installation or
+verification fails, return `failed` with that local error instead of returning
+an empty result.

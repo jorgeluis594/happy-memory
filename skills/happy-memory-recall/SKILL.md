@@ -102,11 +102,11 @@ Set the final status by observable outcome:
 - Otherwise, use `found` when at least one successful attempt returned a memory. This status does not assert relevance.
 - Otherwise, use `empty` when every successful attempt returned `results: []`.
 
-For `failed`, preserve any candidates from earlier successful attempts and populate `error.code`, `error.message`, and `error.details` from the CLI response. If the executable is missing, use a null code, the message `happy-memory executable not found`, and empty details.
+For `failed`, preserve any candidates from earlier successful attempts and populate `error.code`, `error.message`, and `error.details` from the CLI response. For installation failures without a CLI response, use a null code, preserve the local error message, and use empty details.
 
 ## Handle Failures
 
-- If `happy-memory` is unavailable, return `failed`, report that the executable is missing, and read [install-cli.md](references/install-cli.md) for installation steps.
+- If `happy-memory` is unavailable, follow [references/install-cli.md](references/install-cli.md), then retry the original command. Return `failed` only if installation or verification fails.
 - On `GIT_REPOSITORY_NOT_FOUND`, `PROJECT_NOT_INITIALIZED`, `STORE_BUSY`, or `STORE_ERROR`, return `failed` without initializing, mutating, or repairing anything.
 - On `VALIDATION_ERROR` from a generated command, correct the invocation once using the reference. Return `failed` if the corrected invocation fails.
 - Never convert a CLI error into `empty`.
