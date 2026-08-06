@@ -19,16 +19,10 @@ validates, persists, versions, and retrieves it.
 - Deterministic FTS5 search ranked by text relevance, importance, and
   confidence.
 - Independently atomic batch mutations for agent maintenance workflows.
-- Specialized subagent provenance, including agent name, functional role, and
-  originating worktree for every revision.
+- Agent and worktree provenance for every revision.
 - One memory database shared by every linked worktree of a repository.
 - Stable JSON success and error envelopes, plus non-destructive storage
   diagnostics.
-
-The `agent.role` field accepts free-form, non-empty values such as `qa`,
-`copywriter`, `reviewer`, or `database-specialist`. It records the function a
-specialized subagent performed; it does not grant permissions or affect search
-ranking. When omitted, the stored role is `unknown`.
 
 Semantic interpretation remains outside the CLI. `happy-memory` does not use
 embeddings, infer search intent, or decide which memories an agent should keep.
@@ -175,4 +169,3 @@ rejected before publication.
 
 - [Product specification](docs/memory-cli-product-design.md)
 - [Architecture guidelines](docs/architecture.md)
-- [POC implementation plan](docs/poc/README.md)
