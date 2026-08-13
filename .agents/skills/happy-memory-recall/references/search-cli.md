@@ -9,7 +9,6 @@
 - [Search response](#search-response)
 - [Tag vocabulary](#tag-vocabulary)
 - [Process and error contract](#process-and-error-contract)
-- [Examples](#examples)
 
 ## Search command
 
@@ -40,6 +39,7 @@ Batch entries accept `query`, `type`, `tags`, `specific_tags`, `min_importance`,
 | --- | --- | --- |
 | `--type` | One exact type | Retain only that memory type |
 | `--tag` | Non-empty tag; repeatable | Retain memories containing every supplied tag |
+| `--specific-tags` | Non-empty comma-separated tags | Require every normalized tag token in the derived canonical-tag search column |
 | `--min-importance` | Integer `1` through `5` | Retain `importance >= value` |
 | `--min-confidence` | Integer `1` through `5` | Retain `confidence >= value` |
 | `--limit` | Integer `1` through `100` | Return at most that many ranked results |
@@ -61,10 +61,14 @@ Tag handling:
 
 - Normalize lookup values by lowercasing, trimming outer whitespace, replacing whitespace runs with `-`, and collapsing repeated hyphens.
 - Treat repeated tags as AND.
+- Treat specific tags as tokenized constraints and combine them with AND.
 - Deduplicate repeated normalized tag values in `search`.
 - Reject an empty normalized tag.
+- Keep exact tags and specific tags separate: `--tag` requires the complete
+  canonical normalized name, while `--specific-tags` matches normalized tokens
+  in canonical tag names.
 
-The CLI has no search filters for date, version, memory ID, branch, worktree, attributes, author, maximum importance, maximum confidence, OR, NOT, excluded tags, multiple types, or deleted memories. Express OR only as separate search commands chosen by the primary agent.
+The CLI has no search filters for date, version, memory ID, branch, worktree, attributes, author, maximum importance, maximum confidence, OR, NOT, excluded tags, multiple types, or deleted memories. Express OR only as separate search entries selected by the recall worker.
 
 ## Text and scope semantics
 
@@ -72,7 +76,10 @@ The CLI has no search filters for date, version, memory ID, branch, worktree, at
 - Search only current, active memories in that project.
 - Never return a soft-deleted memory.
 - Match only the current `title` and `content` fields.
-- Do not match tags, attributes, revisions, history, or deleted content.
+- Do not let tags, attributes, revisions, history, or deleted content satisfy a
+  general query term.
+- When supplied, use specific tags only to restrict the general title/content
+  match through the derived canonical-tag search column.
 - Split the trimmed query on whitespace.
 - Escape each term as literal FTS5 text and join all terms with AND.
 - Return an empty successful result without querying storage when the query contains punctuation only and no letter or number.
@@ -81,7 +88,7 @@ The CLI performs deterministic textual search. It does not call a model, generat
 
 ## Ranking
 
-The repository applies structured filters before selecting a fixed window of at most 100 BM25 candidates. BM25 weights title by `5` and content by `1`.
+The repository applies structured filters before selecting a fixed window of at most 100 BM25 candidates. BM25 weights title by `5`, content by `1`, and specific tags by `0`.
 
 Ranking version 1 computes:
 
@@ -223,34 +230,6 @@ Read operations may surface these stable codes:
 
 Treat a missing `happy-memory` executable as a local execution failure rather than a CLI JSON error.
 
-When a search fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init --configure-agent <current-agent>` once, selecting exactly one of `codex`, `claude-code`, or `opencode` for the agent executing the skill. Request scoped authorization when the host requires it to update global agent configuration. If initialization succeeds, repeat the original search with exactly the same query and filters. Preserve any `agent_configurations` warning and do not claim shared-worktree synchronization is configured. The initialization command does not count toward the three-search limit, and the repeated command completes the original search attempt. If initialization fails, preserve and return its error without repeating the search. If the repeated search fails, preserve and return that search error.
+When a search fails with `PROJECT_NOT_INITIALIZED`, run `happy-memory init --configure-agent <current-agent>` once, selecting exactly one of `codex`, `claude-code`, or `opencode` for the agent executing the skill. Request scoped authorization when the host requires it to update global agent configuration. If initialization succeeds, repeat the original search with exactly the same query and filters. Preserve any `agent_configurations` warning and do not claim shared-worktree synchronization is configured. Initialization does not count as a retrieval round, and the repeated command completes the original search or batch. If initialization fails, preserve and return its error without repeating the search. If the repeated search fails, preserve and return that search error.
 
 Do not initialize for any other read failure. Never use any other mutation command as recovery.
-
-## Examples
-
-Search with the default limit:
-
-```sh
-happy-memory search "sqlite retry"
-```
-
-Search with every supported filter:
-
-```sh
-happy-memory search "schema migration" --type decision --tag sqlite --tag migrations --min-importance 4 --min-confidence 3 --limit 20
-```
-
-Run separate alternatives selected by the primary agent:
-
-```sh
-happy-memory search "retry" --limit 10
-happy-memory search "contention" --limit 10
-```
-
-Inspect tag vocabulary:
-
-```sh
-happy-memory tags search "database"
-happy-memory tags list
-```

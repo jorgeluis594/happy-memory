@@ -35,8 +35,8 @@ Steps:
 
 1. Replace the primary-agent raw-retrieval workflow with an explicit primary and
    recall-worker role boundary.
-2. Require the primary to create exactly one isolated recall worker and pass a
-   bounded retrieval objective and only the context needed to judge relevance.
+2. Require the primary to create exactly one recall worker with the same
+   conversation history and pass a bounded retrieval objective.
 3. Require the worker to execute retrieval directly and forbid it from
    delegating recall again.
 4. Define the exploration round as one batch with two or three independently

@@ -25,6 +25,7 @@ the input mode with a positional query or filter flags.
 | --- | --- | --- |
 | `--type` | `fact`, `decision`, `constraint`, `preference`, `procedure`, or `lesson` | Match one type |
 | `--tag` | Non-empty tag; repeatable | Require every supplied tag |
+| `--specific-tags` | Non-empty comma-separated tags | Require every normalized token in canonical tag names |
 | `--min-importance` | Integer `1` through `5` | Match values at or above the minimum |
 | `--min-confidence` | Integer `1` through `5` | Match values at or above the minimum |
 | `--limit` | Integer `1` through `100` | Limit returned results |
@@ -34,7 +35,12 @@ Omit unused filters. Run separate searches for alternatives such as multiple typ
 ## Matching and ranking
 
 - Search only active memories in the project resolved from the current Git repository.
-- Match the current `title` and `content`; do not match tags, attributes, history, or deleted content.
+- Match the general query against current `title` and `content`; tags,
+  attributes, history, and deleted content cannot satisfy a general term.
+- Use exact `tags` to require complete canonical normalized names. Use
+  `specific_tags` as tokenized canonical-tag constraints combined with AND.
+- Give specific tags zero BM25 weight so they restrict candidates without
+  changing text relevance.
 - Treat whitespace-delimited query terms as literal AND terms. Do not infer synonyms or semantic intent.
 - Treat a punctuation-only query as a successful empty result.
 - Compare scores only within the same response; each search normalizes its own candidate set.

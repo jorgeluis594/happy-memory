@@ -44,10 +44,10 @@ verification subagents.
 
 ## Responsibility Boundary
 
-The primary agent creates one isolated recall subagent and gives it only the
-repository root, the retrieval objective, the minimum task context needed to
-interpret relevance, and any known project entities or constraints. Raw memory
-candidates never enter the primary agent's context.
+The primary agent creates one recall subagent with the same conversation history
+and gives it a bounded retrieval objective. The worker therefore starts with the
+same task understanding as the primary, while raw memory candidates read after
+the fork never enter the primary agent's context.
 
 The delegation identifies the child explicitly as the recall worker. A primary
 agent delegates once; a recall worker performs the retrieval directly and must
