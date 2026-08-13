@@ -28,10 +28,14 @@ type searchRow struct {
 
 // Candidates applies all filters before returning the fixed BM25 window.
 func (r *SearchRepository) Candidates(ctx context.Context, projectID string, filter search.CandidateFilter) ([]search.Candidate, error) {
+	match := `{title content}: (` + filter.Match + `)`
+	if filter.SpecificTagsMatch != "" {
+		match += ` AND specific_tags: (` + filter.SpecificTagsMatch + `)`
+	}
 	query := r.db.WithContext(ctx).Table("memory_fts").
-		Select("m.*, bm25(memory_fts, 0, 0, 5, 1) AS bm25").
+		Select("m.*, bm25(memory_fts, 0, 0, 5, 1, 0) AS bm25").
 		Joins("JOIN memories AS m ON m.project_id = memory_fts.project_id AND m.id = memory_fts.memory_id").
-		Where("memory_fts MATCH ?", filter.Match).
+		Where("memory_fts MATCH ?", match).
 		Where("m.project_id = ? AND m.deleted_at IS NULL", projectID)
 	if filter.Type != "" {
 		query = query.Where("m.type = ?", filter.Type)

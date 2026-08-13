@@ -28,14 +28,17 @@ Do not add query-selection heuristics, infer filters, invent synonyms, or label 
 
 ## Execute One Attempt
 
-1. Run `happy-memory search <query>` with exactly the selected filters.
+1. Run `happy-memory search <query>` with exactly the selected filters. When two
+   or three independent searches have already been selected, group them in one
+   ordered `happy-memory search --input -` request instead. Never add a search
+   merely to fill a batch.
 2. Treat stdout as success only when the process exits with code zero and the JSON contains `ok: true`.
 3. Treat stderr as failure when the process exits with a nonzero code.
 4. Preserve each result's title and content verbatim.
 5. Record the query, filters, `ranking_version`, result count, result order, and score components.
 6. Return control to the primary agent after recording the attempt.
 
-Execute another attempt only when the primary agent chooses a new query or filter set. Execute at most three `search` commands in one retrieval. Count a corrected command after `VALIDATION_ERROR` toward this maximum.
+Execute another attempt only when the primary agent chooses a new query or filter set. Execute at most three search attempts in one retrieval, counting each batch entry as one attempt. Count a corrected entry after `VALIDATION_ERROR` toward this maximum.
 
 ## Look Up Tags
 
@@ -49,6 +52,9 @@ Run `happy-memory tags search <query>` or `happy-memory tags list` only when the
 - Preserve rank and score within the originating attempt.
 - Never compare, merge, average, or globally sort scores from different attempts.
 - Preserve first-discovery order across attempts.
+- For a partial batch failure, preserve and accumulate every successful item in
+  its original position and record every failed item's public error. Do not
+  retry or discard successful siblings.
 
 Build this YAML packet in working context:
 

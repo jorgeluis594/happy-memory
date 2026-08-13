@@ -42,6 +42,7 @@ type memoryService interface {
 
 type searchService interface {
 	Search(context.Context, search.Input) (search.Response, error)
+	Batch(context.Context, []search.Input) (search.BatchResponse, error)
 }
 
 type diagnosticService interface {
@@ -137,7 +138,7 @@ func execute(ctx context.Context, args []string, input io.Reader, service projec
 		addMemoryCommands(root, &output, input, memories)
 	}
 	if searches != nil {
-		addSearchCommand(root, &output, searches)
+		addSearchCommand(root, &output, input, searches)
 	}
 	if diagnostics != nil {
 		root.AddCommand(&spf13cobra.Command{Use: "doctor", Args: invalidArgs, RunE: func(command *spf13cobra.Command, _ []string) error {
@@ -173,31 +174,96 @@ func execute(ctx context.Context, args []string, input io.Reader, service projec
 	return output.Bytes(), nil
 }
 
-func addSearchCommand(root *spf13cobra.Command, output *bytes.Buffer, service searchService) {
+func addSearchCommand(root *spf13cobra.Command, output *bytes.Buffer, input io.Reader, service searchService) {
 	var kind string
 	var tags []string
+	var specificTags []string
 	var minImportance, minConfidence, limit int
-	command := &spf13cobra.Command{Use: "search <query>", Args: oneArg, RunE: func(command *spf13cobra.Command, args []string) error {
-		response, err := service.Search(command.Context(), search.Input{Query: args[0], Type: kind, Tags: tags, MinImportance: minImportance, MinConfidence: minConfidence, Limit: limit})
+	var inputSource string
+	command := &spf13cobra.Command{Use: "search <query>", Args: func(command *spf13cobra.Command, args []string) error {
+		batch := command.Flags().Changed("input")
+		if batch && (len(args) != 0 || inputSource != "-" || command.Flags().Changed("type") || command.Flags().Changed("tag") || command.Flags().Changed("specific-tags") || command.Flags().Changed("min-importance") || command.Flags().Changed("min-confidence") || command.Flags().Changed("limit")) {
+			return errors.New("invalid input")
+		}
+		if !batch && len(args) != 1 {
+			return errors.New("invalid input")
+		}
+		return nil
+	}, RunE: func(command *spf13cobra.Command, args []string) error {
+		if command.Flags().Changed("input") {
+			if input == nil {
+				return errors.New("invalid input")
+			}
+			var wire searchBatchInput
+			if err := decodeStrict(input, &wire); err != nil {
+				return errors.New("invalid input")
+			}
+			inputs := make([]search.Input, 0, len(wire.Searches))
+			for _, item := range wire.Searches {
+				itemLimit := 10
+				if item.Limit != nil {
+					itemLimit = *item.Limit
+				}
+				inputs = append(inputs, search.Input{Query: item.Query, Type: item.Type, Tags: item.Tags, SpecificTags: item.SpecificTags, MinImportance: item.MinImportance, MinConfidence: item.MinConfidence, Limit: itemLimit})
+			}
+			response, err := service.Batch(command.Context(), inputs)
+			if err != nil {
+				return err
+			}
+			results := make([]searchBatchResultJSON, 0, len(response.Results))
+			for _, result := range response.Results {
+				item := searchBatchResultJSON{Index: result.Index, OK: result.Err == nil}
+				if result.Err == nil {
+					value := toSearchData(result.Response)
+					item.Data = &value
+				} else {
+					value := publicerror.From(result.Err)
+					item.Error = &value
+				}
+				results = append(results, item)
+			}
+			return writeJSON(output, searchBatchSuccess{OK: true, Data: searchBatchData{Summary: batchSummary{Total: response.Total, Succeeded: response.Succeeded, Failed: response.Failed}, Results: results}})
+		}
+		response, err := service.Search(command.Context(), search.Input{Query: args[0], Type: kind, Tags: tags, SpecificTags: specificTags, MinImportance: minImportance, MinConfidence: minConfidence, Limit: limit})
 		if err != nil {
 			return err
 		}
-		results := make([]searchResultJSON, 0, len(response.Results))
-		for _, result := range response.Results {
-			names := make([]string, 0, len(result.Memory.Tags))
-			for _, tag := range result.Memory.Tags {
-				names = append(names, tag.Name)
-			}
-			results = append(results, searchResultJSON{ID: result.Memory.ID, Type: result.Memory.Type, Title: result.Memory.Title, Content: result.Memory.Content, Importance: result.Memory.Importance, Confidence: result.Memory.Confidence, Tags: names, Score: searchScoreJSON{Final: result.Score.Final, Text: result.Score.Text, Importance: result.Score.Importance, Confidence: result.Score.Confidence}})
-		}
-		return writeJSON(output, searchSuccess{OK: true, Data: searchData{RankingVersion: response.RankingVersion, Results: results}})
+		return writeJSON(output, searchSuccess{OK: true, Data: toSearchData(response)})
 	}}
+	command.Flags().StringVar(&inputSource, "input", "", "read one JSON object from stdin")
 	command.Flags().StringVar(&kind, "type", "", "memory type")
 	command.Flags().StringArrayVar(&tags, "tag", nil, "required tag (repeatable)")
+	command.Flags().StringSliceVar(&specificTags, "specific-tags", nil, "required specific tags (comma-separated)")
 	command.Flags().IntVar(&minImportance, "min-importance", 0, "minimum importance")
 	command.Flags().IntVar(&minConfidence, "min-confidence", 0, "minimum confidence")
 	command.Flags().IntVar(&limit, "limit", 10, "maximum results")
 	root.AddCommand(command)
+}
+
+func toSearchData(response search.Response) searchData {
+	results := make([]searchResultJSON, 0, len(response.Results))
+	for _, result := range response.Results {
+		names := make([]string, 0, len(result.Memory.Tags))
+		for _, tag := range result.Memory.Tags {
+			names = append(names, tag.Name)
+		}
+		results = append(results, searchResultJSON{ID: result.Memory.ID, Type: result.Memory.Type, Title: result.Memory.Title, Content: result.Memory.Content, Importance: result.Memory.Importance, Confidence: result.Memory.Confidence, Tags: names, Score: searchScoreJSON{Final: result.Score.Final, Text: result.Score.Text, Importance: result.Score.Importance, Confidence: result.Score.Confidence}})
+	}
+	return searchData{RankingVersion: response.RankingVersion, Results: results}
+}
+
+type searchBatchInput struct {
+	Searches []searchBatchEntry `json:"searches"`
+}
+
+type searchBatchEntry struct {
+	Query         string   `json:"query"`
+	Type          string   `json:"type,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	SpecificTags  []string `json:"specific_tags,omitempty"`
+	MinImportance int      `json:"min_importance,omitempty"`
+	MinConfidence int      `json:"min_confidence,omitempty"`
+	Limit         *int     `json:"limit,omitempty"`
 }
 
 type searchScoreJSON struct {
@@ -226,6 +292,23 @@ type searchData struct {
 type searchSuccess struct {
 	OK   bool       `json:"ok"`
 	Data searchData `json:"data"`
+}
+
+type searchBatchResultJSON struct {
+	Index int                `json:"index"`
+	OK    bool               `json:"ok"`
+	Data  *searchData        `json:"data,omitempty"`
+	Error *publicerror.Error `json:"error,omitempty"`
+}
+
+type searchBatchData struct {
+	Summary batchSummary            `json:"summary"`
+	Results []searchBatchResultJSON `json:"results"`
+}
+
+type searchBatchSuccess struct {
+	OK   bool            `json:"ok"`
+	Data searchBatchData `json:"data"`
 }
 
 func addMemoryCommands(root *spf13cobra.Command, output *bytes.Buffer, input io.Reader, service memoryService) {

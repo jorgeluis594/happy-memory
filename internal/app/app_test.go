@@ -168,6 +168,91 @@ func TestBatchIntegrationAllowsPartialSuccessAndPersistsSuccessfulItems(t *testi
 	}
 }
 
+func TestSearchBatchIntegrationReturnsMatchEmptyAndItemError(t *testing.T) {
+	repository := initRepository(t)
+	chdir(t, repository)
+	run := func(args []string, input string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := RunWithInput(context.Background(), args, bytes.NewBufferString(input), &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+	if code, _, stderr := run([]string{"init", "--name", "search-batch"}, ""); code != 0 {
+		t.Fatalf("init code=%d stderr=%s", code, stderr)
+	}
+	for _, body := range []string{
+		`{"type":"fact","title":"SQLite storage","content":"Uses FTS5","importance":4,"confidence":5,"tags":["sqlite"]}`,
+		`{"type":"decision","title":"Worktree identity","content":"Share the Git common directory","importance":5,"confidence":4,"tags":["git"]}`,
+	} {
+		if code, _, stderr := run([]string{"create", "--input", "-"}, body); code != 0 {
+			t.Fatalf("create code=%d stderr=%s", code, stderr)
+		}
+	}
+	batch := `{"searches":[{"query":"SQLite"},{"query":"missing-term"},{"query":"worktree","type":"unknown"}]}`
+	code, stdout, stderr := run([]string{"search", "--input", "-"}, batch)
+	if code != 0 || stderr != "" {
+		t.Fatalf("search code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	var response struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Summary struct{ Total, Succeeded, Failed int } `json:"summary"`
+			Results []struct {
+				Index int  `json:"index"`
+				OK    bool `json:"ok"`
+				Data  struct {
+					RankingVersion int `json:"ranking_version"`
+					Results        []struct {
+						Title string `json:"title"`
+					} `json:"results"`
+				} `json:"data"`
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			} `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Data.Summary.Total != 3 || response.Data.Summary.Succeeded != 2 || response.Data.Summary.Failed != 1 || len(response.Data.Results[0].Data.Results) != 1 || response.Data.Results[0].Data.Results[0].Title != "SQLite storage" || response.Data.Results[1].Data.Results == nil || len(response.Data.Results[1].Data.Results) != 0 || response.Data.Results[2].Error.Code != "VALIDATION_ERROR" {
+		t.Fatalf("response=%s", stdout)
+	}
+}
+
+func TestSearchSpecificTagsIntegrationSupportsCLIAndIsolatedBatchValidation(t *testing.T) {
+	repository := initRepository(t)
+	chdir(t, repository)
+	run := func(args []string, input string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := RunWithInput(context.Background(), args, bytes.NewBufferString(input), &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+	if code, _, stderr := run([]string{"init", "--name", "specific-tags"}, ""); code != 0 {
+		t.Fatalf("init code=%d stderr=%s", code, stderr)
+	}
+	for _, body := range []string{
+		`{"type":"fact","title":"Shared workflow","content":"Runs agents","importance":4,"confidence":5,"tags":["agent-orchestration","codex"]}`,
+		`{"type":"fact","title":"Shared workflow","content":"Runs tools","importance":4,"confidence":5,"tags":["codex"]}`,
+		`{"type":"fact","title":"Unrelated","content":"Plain text","importance":4,"confidence":5,"tags":["orca"]}`,
+	} {
+		if code, _, stderr := run([]string{"create", "--input", "-"}, body); code != 0 {
+			t.Fatalf("create code=%d stderr=%s", code, stderr)
+		}
+	}
+	code, stdout, stderr := run([]string{"search", "shared", "--specific-tags", "Codex,orchestration"}, "")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"title":"Shared workflow"`) || strings.Count(stdout, `"id":`) != 1 {
+		t.Fatalf("CLI search code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	batch := `{"searches":[{"query":"shared","specific_tags":[" Codex ","codex"]},{"query":"shared","specific_tags":["   "]},{"query":"orca"}]}`
+	code, stdout, stderr = run([]string{"search", "--input", "-"}, batch)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"summary":{"total":3,"succeeded":2,"failed":1}`) || !strings.Contains(stdout, `"index":1,"ok":false,"error":{"code":"VALIDATION_ERROR"`) {
+		t.Fatalf("batch search code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, `"title":"Unrelated"`) {
+		t.Fatalf("general query matched tags only: %s", stdout)
+	}
+}
+
 func TestInitCreatesRepositoryDatabaseAndReusesIt(t *testing.T) {
 	repository := initRepository(t)
 	chdir(t, repository)

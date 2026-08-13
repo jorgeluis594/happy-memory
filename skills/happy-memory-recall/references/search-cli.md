@@ -10,6 +10,17 @@ happy-memory search "<query>" [filters]
 
 Pass exactly one non-empty query. The default limit is `10`.
 
+For 1–100 independent searches already selected by the agent, send one strict
+JSON object to `happy-memory search --input -`:
+
+```json
+{"searches":[{"query":"sqlite"},{"query":"worktrees","type":"decision","tags":["git"],"limit":5}]}
+```
+
+Each entry accepts `query`, `type`, `tags`, `specific_tags`, `min_importance`,
+`min_confidence`, and `limit`; omitted limits default to `10`. Do not combine
+the input mode with a positional query or filter flags.
+
 | Flag | Valid value | Semantics |
 | --- | --- | --- |
 | `--type` | `fact`, `decision`, `constraint`, `preference`, `procedure`, or `lesson` | Match one type |
@@ -43,6 +54,12 @@ An empty search is successful:
 ```json
 {"ok":true,"data":{"ranking_version":1,"results":[]}}
 ```
+
+Batch output contains a summary and one ordered item per entry. Each item has
+`index`, `ok`, and either the normal search `data` or a public `error`. Partial
+success exits zero and successful items must be preserved. Invalid JSON,
+unknown fields, trailing content, batches outside 1–100, storage-open failures,
+and project-resolution failures fail the whole command.
 
 ## Tag vocabulary
 

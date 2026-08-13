@@ -15,6 +15,7 @@ const (
 	// RankingVersion identifies the stable scoring contract.
 	RankingVersion = 1
 	candidateLimit = 100
+	batchLimit     = 100
 )
 
 // Input contains the query and optional search filters.
@@ -22,6 +23,7 @@ type Input struct {
 	Query                        string
 	Type                         string
 	Tags                         []string
+	SpecificTags                 []string
 	MinImportance, MinConfidence int
 	Limit                        int
 }
@@ -29,6 +31,7 @@ type Input struct {
 // CandidateFilter is the persistence-level candidate query.
 type CandidateFilter struct {
 	Match                        string
+	SpecificTagsMatch            string
 	Type                         string
 	Tags                         []string
 	MinImportance, MinConfidence int
@@ -68,6 +71,19 @@ type Response struct {
 	Results        []Result
 }
 
+// BatchResult is one ordered search result or its isolated error.
+type BatchResult struct {
+	Index    int
+	Response Response
+	Err      error
+}
+
+// BatchResponse summarizes an ordered group of independent searches.
+type BatchResponse struct {
+	Total, Succeeded, Failed int
+	Results                  []BatchResult
+}
+
 // Service coordinates candidate retrieval and deterministic ranking.
 type Service struct {
 	projects ProjectResolver
@@ -92,7 +108,43 @@ func (s *Service) Search(ctx context.Context, input Input) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	candidates, err := s.repo.Candidates(ctx, project.ID, filter)
+	return s.search(ctx, project.ID, input, filter)
+}
+
+// Batch validates the batch boundary, resolves the project once, and executes
+// every search sequentially while preserving per-item errors and order.
+func (s *Service) Batch(ctx context.Context, inputs []Input) (BatchResponse, error) {
+	if len(inputs) < 1 || len(inputs) > batchLimit {
+		return BatchResponse{}, memory.NewError(memory.CodeValidationError, errors.New("invalid input"))
+	}
+	project, err := s.projects.Current(ctx)
+	if err != nil {
+		return BatchResponse{}, err
+	}
+	response := BatchResponse{Total: len(inputs), Results: make([]BatchResult, 0, len(inputs))}
+	for index, input := range inputs {
+		result := BatchResult{Index: index}
+		filter, empty, prepareErr := prepare(input)
+		switch {
+		case prepareErr != nil:
+			result.Err = prepareErr
+		case empty:
+			result.Response = Response{RankingVersion: RankingVersion, Results: []Result{}}
+		default:
+			result.Response, result.Err = s.search(ctx, project.ID, input, filter)
+		}
+		if result.Err == nil {
+			response.Succeeded++
+		} else {
+			response.Failed++
+		}
+		response.Results = append(response.Results, result)
+	}
+	return response, nil
+}
+
+func (s *Service) search(ctx context.Context, projectID string, input Input, filter CandidateFilter) (Response, error) {
+	candidates, err := s.repo.Candidates(ctx, projectID, filter)
 	if err != nil {
 		return Response{}, err
 	}
@@ -121,6 +173,18 @@ func prepare(input Input) (CandidateFilter, bool, error) {
 			tags = append(tags, normalized)
 		}
 	}
+	specificTags := make([]string, 0, len(input.SpecificTags))
+	seenSpecificTags := make(map[string]bool, len(input.SpecificTags))
+	for _, tag := range input.SpecificTags {
+		normalized := memory.NormalizeTag(tag)
+		if normalized == "" {
+			return CandidateFilter{}, false, memory.NewError(memory.CodeValidationError, errors.New("invalid input"))
+		}
+		if !seenSpecificTags[normalized] {
+			seenSpecificTags[normalized] = true
+			specificTags = append(specificTags, `"`+strings.ReplaceAll(normalized, `"`, `""`)+`"`)
+		}
+	}
 	terms := strings.Fields(query)
 	searchable := false
 	quoted := make([]string, 0, len(terms))
@@ -130,7 +194,7 @@ func prepare(input Input) (CandidateFilter, bool, error) {
 		}
 		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
 	}
-	return CandidateFilter{Match: strings.Join(quoted, " AND "), Type: input.Type, Tags: tags, MinImportance: input.MinImportance, MinConfidence: input.MinConfidence, Limit: candidateLimit}, !searchable, nil
+	return CandidateFilter{Match: strings.Join(quoted, " AND "), SpecificTagsMatch: strings.Join(specificTags, " AND "), Type: input.Type, Tags: tags, MinImportance: input.MinImportance, MinConfidence: input.MinConfidence, Limit: candidateLimit}, !searchable, nil
 }
 
 func rank(candidates []Candidate) []Result {

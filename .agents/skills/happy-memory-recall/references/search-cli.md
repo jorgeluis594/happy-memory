@@ -23,6 +23,17 @@ Quote a multiword query at the shell boundary so Cobra receives it as one argume
 
 The command defaults to `--limit 10`. It exposes no interactive mode, semantic mode, profile, configurable ranking weights, or queryless bootstrap search.
 
+Run 1–100 already-selected independent searches in one ordered request:
+
+```text
+happy-memory search --input -
+{"searches":[{"query":"sqlite"},{"query":"worktrees","type":"decision","tags":["git"],"limit":5}]}
+```
+
+Batch entries accept `query`, `type`, `tags`, `specific_tags`, `min_importance`,
+`min_confidence`, and `limit`. An omitted `limit` defaults to `10`. Do not mix
+`--input` with a positional query or search filter flags.
+
 ## Filter contract
 
 | Flag | Accepted value | Effect |
@@ -129,6 +140,12 @@ An empty match set is:
 ```
 
 Search results do not expose memory version, attributes, content hash, timestamps, deletion timestamp, tag IDs, or project ID.
+
+A batch returns `ok: true`, a `total`/`succeeded`/`failed` summary, and one
+ordered item per input with `index`, `ok`, and either the normal search `data`
+or a public `error`. Item failures do not stop later searches or produce a
+nonzero exit. Malformed JSON, unknown fields, trailing content, a batch outside
+1–100, and failures opening storage or resolving the project fail globally.
 
 ## Tag vocabulary
 

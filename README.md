@@ -18,6 +18,7 @@ validates, persists, versions, and retrieves it.
 - Project-scoped tags with a reusable canonical vocabulary.
 - Deterministic FTS5 search ranked by text relevance, importance, and
   confidence.
+- Ordered batch search for 1–100 independent queries with isolated item errors.
 - Independently atomic batch mutations for agent maintenance workflows.
 - Agent and worktree provenance for every revision.
 - One memory database shared by every linked worktree of a repository.
@@ -109,6 +110,26 @@ through a human-oriented command workflow:
 
 These skills keep semantic judgment in the agent while treating the CLI as the
 source of truth for validation, concurrency, persistence, and history.
+
+Independent searches can share one invocation without sharing ranking windows:
+
+```sh
+printf '%s' '{"searches":[{"query":"sqlite"},{"query":"worktrees","type":"decision"}]}' | happy-memory search --input -
+```
+
+Searches can optionally require tokenized matches in the memory's canonical
+tags without allowing those tags to satisfy the general text query:
+
+```sh
+happy-memory search "agent workflow" --specific-tags "Orca,Codex"
+```
+
+Specific tags are normalized and combined with AND. The existing repeatable
+`--tag` filter remains an exact canonical-tag filter with AND semantics.
+
+Each batch entry accepts `query`, `type`, `tags`, `specific_tags`, `min_importance`,
+`min_confidence`, and `limit` (default `10`). Item errors do not discard other
+results or make a partially successful batch exit nonzero.
 
 ## Storage and repository identity
 

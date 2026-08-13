@@ -156,12 +156,17 @@ func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
 	updated := created
 	updated.Version = 2
 	updated.Title = "second"
+	updated.Tags = []memory.Tag{{ID: "tag-codex", Name: "Codex", NormalizedName: "codex", CreatedAt: stamp, UpdatedAt: stamp}}
 	updated.ContentHash = strings64("e")
 	updated.UpdatedAt = stamp.Add(time.Minute)
 	revision := memory.Revision{MemoryID: "life", ProjectID: "p1", Version: 2, Operation: "update", AgentRole: "unknown", WorktreeRoot: "/repo", CreatedAt: updated.UpdatedAt}
 	updated, err = repo.Mutate(context.Background(), memory.MutationRecord{Memory: updated, Revision: revision, ExpectedVersion: 1})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var specificTags string
+	if err = database.GORM().Raw("SELECT specific_tags FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&specificTags).Error; err != nil || specificTags != "codex" {
+		t.Fatalf("updated specific tags=%q err=%v", specificTags, err)
 	}
 	_, err = repo.Mutate(context.Background(), memory.MutationRecord{Memory: updated, Revision: revision, ExpectedVersion: 1})
 	if memory.ErrorCode(err) != memory.CodeVersionConflict || memory.ErrorDetails(err)["current_version"] != 2 {
@@ -186,7 +191,7 @@ func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
 		t.Fatalf("deleted fts=%d err=%v", ftsCount, err)
 	}
 	tags, err := repo.ListTags(context.Background(), "p1")
-	if err != nil || len(tags) != 1 || tags[0].ActiveMemoryCount != 0 {
+	if err != nil || len(tags) != 2 || tags[0].ActiveMemoryCount != 0 || tags[1].ActiveMemoryCount != 0 {
 		t.Fatalf("deleted tag count=%#v err=%v", tags, err)
 	}
 	restored := created
@@ -206,8 +211,11 @@ func TestMemoryRepositoryLifecycleCASHistoryAndFTS(t *testing.T) {
 	if err = database.GORM().Raw("SELECT count(*) FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&ftsCount).Error; err != nil || ftsCount != 1 {
 		t.Fatalf("restored fts=%d err=%v", ftsCount, err)
 	}
+	if err = database.GORM().Raw("SELECT specific_tags FROM memory_fts WHERE project_id = ? AND memory_id = ?", "p1", "life").Scan(&specificTags).Error; err != nil || specificTags != "go" {
+		t.Fatalf("restored specific tags=%q err=%v", specificTags, err)
+	}
 	tags, err = repo.ListTags(context.Background(), "p1")
-	if err != nil || tags[0].ActiveMemoryCount != 1 {
+	if err != nil || len(tags) != 2 || tags[0].ActiveMemoryCount != 0 || tags[1].NormalizedName != "go" || tags[1].ActiveMemoryCount != 1 {
 		t.Fatalf("restored tag count=%#v err=%v", tags, err)
 	}
 }

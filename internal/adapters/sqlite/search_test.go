@@ -48,6 +48,47 @@ func TestSearchRepositoryWeightsFiltersTagsAndTextColumns(t *testing.T) {
 	}
 }
 
+func TestSearchRepositoryScopesGeneralQueryAndSpecificTags(t *testing.T) {
+	memories, _ := memoryTestRepository(t)
+	ctx := context.Background()
+	stamp := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	agentOrchestration := memory.Tag{ID: "agent-orchestration", Name: "Agent Orchestration", NormalizedName: "agent-orchestration", CreatedAt: stamp, UpdatedAt: stamp}
+	codex := memory.Tag{ID: "codex", Name: "Codex", NormalizedName: "codex", CreatedAt: stamp, UpdatedAt: stamp}
+	orca := memory.Tag{ID: "orca", Name: "Orca", NormalizedName: "orca", CreatedAt: stamp, UpdatedAt: stamp}
+	records := []memory.CreateRecord{
+		memoryRecord("both", "p1", strings64("1"), "shared query", codex, agentOrchestration),
+		memoryRecord("one-tag", "p1", strings64("2"), "shared query", codex),
+		memoryRecord("tag-only", "p1", strings64("3"), "plain", orca),
+	}
+	for _, record := range records {
+		if _, err := memories.Create(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := NewSearchRepository(memories.db)
+	values, err := repo.Candidates(ctx, "p1", search.CandidateFilter{Match: `"shared"`, SpecificTagsMatch: `"codex" AND "orchestration"`, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].Memory.ID != "both" {
+		t.Fatalf("specific-tag candidates=%#v", values)
+	}
+	unfiltered, err := repo.Candidates(ctx, "p1", search.CandidateFilter{Match: `"shared"`, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unfiltered) != 2 || unfiltered[1].Memory.ID != values[0].Memory.ID || unfiltered[1].BM25 != values[0].BM25 {
+		t.Fatalf("specific tags changed text ranking: filtered=%#v unfiltered=%#v", values, unfiltered)
+	}
+	values, err = repo.Candidates(ctx, "p1", search.CandidateFilter{Match: `"orca"`, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("general query matched tags only: %#v", values)
+	}
+}
+
 func TestSearchRepositoryCandidateCutoffIsDeterministic(t *testing.T) {
 	memories, _ := memoryTestRepository(t)
 	for i := range 105 {
