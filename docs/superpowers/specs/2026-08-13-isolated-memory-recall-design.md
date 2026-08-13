@@ -49,6 +49,12 @@ repository root, the retrieval objective, the minimum task context needed to
 interpret relevance, and any known project entities or constraints. Raw memory
 candidates never enter the primary agent's context.
 
+The delegation identifies the child explicitly as the recall worker. A primary
+agent delegates once; a recall worker performs the retrieval directly and must
+not create another recall subagent. This role boundary prevents recursive
+delegation while allowing the same skill package to describe both sides of the
+protocol.
+
 The recall subagent owns:
 
 - choosing bounded queries and justified filters;
