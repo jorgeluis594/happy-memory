@@ -33,14 +33,14 @@ The change covers:
 - the repository and published copies of `happy-memory-recall`;
 - the repository and published copies of `happy-memory-maintainer`;
 - their required read and maintenance references;
-- an explicit strict or relaxed text-matching option in the search CLI;
 - tests and documentation for the revised search and skill contracts.
 
 The design assumes the host agent system supports subagents. Recall has no
 direct-execution fallback in the primary agent.
 
 The change does not add embeddings, model calls inside the CLI, persistent
-relevance labels, automatic tag migration, or multiple verification subagents.
+relevance labels, automatic tag migration, new search modes, or multiple
+verification subagents.
 
 ## Responsibility Boundary
 
@@ -80,10 +80,11 @@ run the searches directly in the primary agent's context.
 ### Exploration round
 
 The subagent performs one ordered batch containing two or three independently
-justified strict searches. The batch includes both precise textual searches and
-precise textual searches constrained by justified `specific_tags`. These
-variants run together even when an unconstrained query already returns
-candidates, because candidate presence does not establish relevance.
+justified searches. The batch combines precise textual searches with variants
+that use the existing exact canonical `tags` filter or the looser tokenized
+`specific_tags` filter when those filters are justified. Exact and specific-tag
+variants run together even when another entry already returns candidates,
+because candidate presence does not establish relevance.
 
 Every batch entry keeps its own ranking window, result order, score components,
 and error. The subagent must not compare or merge scores across entries. It may
@@ -104,50 +105,43 @@ evidence from the first round.
 
 The validation search is justified when:
 
-- no relevant memory was found and relaxed matching may improve recall;
+- no relevant memory was found and a query or tag refinement may improve
+  recall;
 - direct evidence is incomplete or ambiguous and a focused query can resolve
   the missing point;
 - relevant results conflict and a focused query can test the conflict.
 
-When no relevant memory was found, the second search uses relaxed text matching
-and may use one or more justified `specific_tags` to contain noise. When the
-first round found ambiguous or conflicting relevant evidence, the second search
-uses the strict or relaxed mode best suited to the missing fact. The round is
-omitted when the exploration round already produced sufficient, consistent
-evidence.
+The second search may refine the textual query, use an exact canonical tag, or
+use one or more tokenized `specific_tags` discovered or confirmed in the first
+round. The round is omitted when exploration already produced sufficient,
+consistent evidence.
 
 Recall performs no more than these two rounds. The exploration batch contains
 at most three entries and the validation round contains exactly one entry.
 
-## Search Match Contract
+## Existing Search Filter Contract
 
-Search adds a `match` option with values `all` and `any`. Positional search
-accepts `--match all|any`, and each batch entry accepts a `match` field. Omission
-defaults to `all`, preserving existing callers and output shapes.
+The design uses the existing search behavior without adding a new text match
+mode. Every whitespace-delimited general query term remains a literal AND match
+against active title and content fields.
 
-`all` retains the current behavior: whitespace-delimited literal terms are
-escaped and joined with AND. `any` escapes the same terms and joins them with
-OR. Both modes continue to search only the active title and content fields.
+The repeatable exact `tags` filter requires each supplied normalized canonical
+tag. The `specific_tags` filter matches normalized tokens in the derived
+canonical-tag FTS column, allowing a less exact tag constraint while still
+combining multiple supplied values with AND. Specific tags carry zero BM25
+weight, cannot satisfy a general query term, and do not alter text relevance.
 
-Structured filters remain conjunctive. Repeated exact `tags` and
-`specific_tags` must all match regardless of the text match mode. Specific tags
-continue to carry zero BM25 weight and cannot satisfy a general query term.
-
-Relaxed mode uses the existing candidate window, BM25 calculation, metadata
-normalization, final-score formula, and tie-breakers. This does not change the
-ranking formula, so `ranking_version` remains unchanged. Results from different
-queries or match modes remain incomparable.
-
-Unknown match values produce `VALIDATION_ERROR`. A one-term query behaves the
-same in both modes. Existing punctuation-only and empty-query behavior remains
-unchanged.
+Every batch entry retains its independent candidate window, normalization,
+ranking, result, or public error. Scores remain comparable only inside their
+originating entry. No CLI, storage, migration, or ranking change is required for
+this design.
 
 ## Subagent Result Contract
 
 The subagent returns a small structured packet containing:
 
 - execution status and retrieval coverage;
-- the executed rounds, queries, match modes, filters, ranking versions, and
+- the executed rounds, queries, filters, ranking versions, and
   result counts;
 - up to five selected relevant memories;
 - an error when retrieval could not complete.
@@ -179,9 +173,9 @@ chooses every query and evaluates every raw candidate. The primary agent keeps
 final task judgment, but query selection and relevance filtering belong to the
 recall subagent.
 
-The skill and read contract must describe batch search, `specific_tags`, the
-new match mode, per-entry ranking isolation, partial batch failures, the bounded
-rounds, relevance classification, and the output boundary consistently.
+The skill and read contract must describe batch search, exact tags,
+`specific_tags`, per-entry ranking isolation, partial batch failures, the
+bounded rounds, relevance classification, and the output boundary consistently.
 
 The instructions must state these requirements naturally. They must not include
 project-specific queries, memory records, audit scenarios, or example output
@@ -227,21 +221,12 @@ remains empty.
 
 ## Verification
 
-CLI tests cover:
-
-- default compatibility with strict AND matching;
-- explicit `all` and `any` behavior in positional and batch modes;
-- invalid match values and strict JSON validation;
-- the interaction of relaxed text matching with exact tags, specific tags,
-  type, importance, confidence, and limits;
-- unchanged ranking formula and ranking-version behavior;
-- partial batch failures and independent ranking windows.
-
 Skill scenario tests or review fixtures cover:
 
 - sufficient relevant evidence in the exploration batch;
-- simultaneous unscoped and specific-tag searches in the first batch;
-- conditional relaxed fallback when the first round has no relevant evidence;
+- simultaneous exact and specific-tag searches in the first batch;
+- conditional query or tag refinement when the first round has no relevant
+  evidence;
 - focused validation of incomplete or contradictory evidence;
 - many candidates with no relevant memory transferred;
 - transfer of complete verbatim relevant memories only;
