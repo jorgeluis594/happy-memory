@@ -59,7 +59,7 @@ func TestMemoryFTSMigrationUpAndDownSchemas(t *testing.T) {
 	if err = Migrate(context.Background(), db, migrations); err != nil {
 		t.Fatal(err)
 	}
-	assertFTSColumns(t, db, []string{"memory_id", "project_id", "title", "content"})
+	assertFTSColumns(t, db, []string{"memory_id", "project_id", "title", "content", "specific_tags"})
 	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,47 @@ func TestMemoryFTSMigrationUpAndDownSchemas(t *testing.T) {
 	if _, err = provider.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	assertFTSColumns(t, db, []string{"memory_id", "project_id", "title", "content", "tags"})
+	assertFTSColumns(t, db, []string{"memory_id", "project_id", "title", "content"})
+}
+
+func TestSpecificTagsMigrationBackfillsCanonicalNamesInOrder(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	migrations, err := fs.Sub(EmbeddedMigrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.UpTo(context.Background(), 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO projects(id,name,last_known_git_common_dir,created_at,updated_at) VALUES('p','p','/p','2026-08-05T12:00:00Z','2026-08-05T12:00:00Z');
+INSERT INTO memories(id,project_id,current_version,type,title,content,importance,confidence,content_hash,created_at,updated_at) VALUES('m','p',1,'fact','title','content',3,3,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','2026-08-05T12:00:00Z','2026-08-05T12:00:00Z');
+INSERT INTO tags(id,project_id,name,normalized_name,created_at,description,updated_at) VALUES('z','p','Zulu','zulu','2026-08-05T12:00:00Z',NULL,'2026-08-05T12:00:00Z'),('a','p','Alpha','alpha','2026-08-05T12:00:00Z',NULL,'2026-08-05T12:00:00Z');
+INSERT INTO memory_tags(project_id,memory_id,tag_id,created_at) VALUES('p','m','z','2026-08-05T12:00:00Z'),('p','m','a','2026-08-05T12:00:00Z');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var specificTags string
+	if err = db.QueryRow(`SELECT specific_tags FROM memory_fts WHERE memory_id='m'`).Scan(&specificTags); err != nil || specificTags != "alpha zulu" {
+		t.Fatalf("specific tags=%q err=%v", specificTags, err)
+	}
+	if _, err = provider.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertFTSColumns(t, db, []string{"memory_id", "project_id", "title", "content"})
+	var count int
+	if err = db.QueryRow(`SELECT count(*) FROM memory_fts WHERE memory_id='m'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("down backfill count=%d err=%v", count, err)
+	}
 }
 
 func assertFTSColumns(t *testing.T, db *sql.DB, want []string) {

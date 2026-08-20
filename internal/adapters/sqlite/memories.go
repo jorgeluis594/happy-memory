@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -90,7 +91,7 @@ func (r *MemoryRepository) Create(ctx context.Context, record memory.CreateRecor
 		if err := tx.Create(&revisionRow{MemoryID: rev.MemoryID, ProjectID: rev.ProjectID, Version: rev.Version, Operation: rev.Operation, SnapshotJSON: string(rev.Snapshot), AgentName: rev.AgentName, AgentRole: rev.AgentRole, WorktreeRoot: rev.WorktreeRoot, CreatedAt: formatTime(rev.CreatedAt)}).Error; err != nil {
 			return memoryStoreError(err)
 		}
-		if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content) VALUES (?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content).Error; err != nil {
+		if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content,specific_tags) VALUES (?,?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content, specificTagsText(m.Tags)).Error; err != nil {
 			return memoryStoreError(err)
 		}
 		return nil
@@ -230,7 +231,7 @@ func (r *MemoryRepository) Mutate(ctx context.Context, record memory.MutationRec
 			return memoryStoreError(err)
 		}
 		if m.DeletedAt == nil {
-			if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content) VALUES (?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content).Error; err != nil {
+			if err := tx.Exec(`INSERT INTO memory_fts (memory_id,project_id,title,content,specific_tags) VALUES (?,?,?,?,?)`, m.ID, m.ProjectID, m.Title, m.Content, specificTagsText(m.Tags)).Error; err != nil {
 				return memoryStoreError(err)
 			}
 		}
@@ -240,6 +241,15 @@ func (r *MemoryRepository) Mutate(ctx context.Context, record memory.MutationRec
 		return memory.Memory{}, err
 	}
 	return m, nil
+}
+
+func specificTagsText(tags []memory.Tag) string {
+	names := make([]string, len(tags))
+	for i := range tags {
+		names[i] = tags[i].NormalizedName
+	}
+	slices.Sort(names)
+	return strings.Join(names, " ")
 }
 
 // History returns immutable revisions in ascending version order.

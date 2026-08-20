@@ -214,6 +214,15 @@ func (r *runtime) Search(ctx context.Context, input search.Input) (search.Respon
 	return r.searches.Search(ctx, input)
 }
 
+type searchRuntime struct{ *runtime }
+
+func (r searchRuntime) Batch(ctx context.Context, inputs []search.Input) (search.BatchResponse, error) {
+	if err := r.open(ctx, false); err != nil {
+		return search.BatchResponse{}, err
+	}
+	return r.searches.Batch(ctx, inputs)
+}
+
 func (r *runtime) Close() error {
 	if r.database == nil {
 		return nil
@@ -249,7 +258,7 @@ func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return writeResult(stdout, stderr, response, executeErr, nil)
 	}
 	runtime := newRuntime(migrations)
-	response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, runtime, memoryRuntime{runtime}, runtime, nil)
+	response, executeErr := commandadapter.ExecuteAll(ctx, args, stdin, runtime, memoryRuntime{runtime}, searchRuntime{runtime}, nil)
 	return writeResult(stdout, stderr, response, executeErr, runtime.Close)
 }
 

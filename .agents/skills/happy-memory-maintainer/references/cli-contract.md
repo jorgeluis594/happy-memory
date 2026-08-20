@@ -42,7 +42,7 @@ Run:
 happy-memory search "<query>" [filters] --limit 10
 ```
 
-Use one non-empty, specific textual query. Search only matches active title and content, joins whitespace-delimited terms with AND, and does not interpret synonyms. Apply type, repeated tag, minimum importance, or minimum confidence filters only when justified by the maintenance case.
+Use one non-empty, specific textual query. Search only matches active title and content, joins whitespace-delimited terms with AND, and does not interpret synonyms. Apply type, repeated tag, specific tags, minimum importance, or minimum confidence filters only when justified by the maintenance case.
 
 Search results identify candidates but omit their current version. Run `get` before update or delete.
 

@@ -481,9 +481,13 @@ This lets a consumer reuse the existing vocabulary before creating tags.
 
 ```text
 happy-memory search "<query>" [filters]
+happy-memory search --input -
 ```
 
-The query is required. The POC does not include modes, configurable profiles, or bootstrap search.
+The positional mode requires one query. The input mode receives 1–100 ordered,
+independent searches as `{"searches":[...]}`. The two modes and their flags are
+mutually exclusive. The POC does not include configurable profiles or bootstrap
+search.
 
 Initial filters:
 
@@ -497,8 +501,21 @@ Initial filters:
 
 - Filters apply within the active project.
 - Repeating `--tag` uses AND semantics.
+- `--specific-tags "Orca,Codex"` optionally scopes matches to canonical tag
+  tokens. Values are normalized, deduplicated, escaped as FTS phrases, and
+  combined with AND; empty values are invalid.
+- The general query always matches only `title` and `content`. Specific tags
+  restrict that match through the derived `specific_tags` FTS column and carry
+  zero BM25 weight, so they do not alter text relevance.
 - `limit` has a maximum value of `100`.
 - The query is treated as plain text. The CLI escapes special FTS5 syntax.
+- Batch entries accept `query`, `type`, `tags`, `specific_tags`, `min_importance`,
+  `min_confidence`, and `limit`; an omitted limit defaults to `10`.
+- A batch resolves the project once and executes sequentially. Each entry keeps
+  its own candidate window, normalization, ranking, result, or public error.
+- Partial success exits zero and reports ordered item results plus
+  `total`/`succeeded`/`failed`. Malformed input and common setup failures fail the
+  whole command.
 
 ### 7.2 Ranking algorithm version 1
 
@@ -588,6 +605,7 @@ happy-memory restore <memory-id> --version <n> --expected-version <n>
 happy-memory history <memory-id>
 
 happy-memory search "<query>" [filters]
+happy-memory search --input -
 happy-memory list [filters] [--include-deleted]
 
 happy-memory tags list

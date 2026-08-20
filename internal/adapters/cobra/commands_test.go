@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -64,9 +65,16 @@ func TestInitConfiguresCommaSeparatedAgentsAndRejectsInvalidLists(t *testing.T) 
 }
 
 type searchStub struct {
-	input    search.Input
-	response search.Response
-	err      error
+	input         search.Input
+	batchInputs   []search.Input
+	response      search.Response
+	batchResponse search.BatchResponse
+	err           error
+}
+
+func (s *searchStub) Batch(_ context.Context, inputs []search.Input) (search.BatchResponse, error) {
+	s.batchInputs = inputs
+	return s.batchResponse, s.err
 }
 
 func (s *searchStub) Search(_ context.Context, input search.Input) (search.Response, error) {
@@ -93,6 +101,61 @@ func TestSearchCommandRequiresOneQuery(t *testing.T) {
 	for _, args := range [][]string{{"search"}, {"search", "one", "two"}} {
 		if _, err := ExecuteWithServices(context.Background(), args, bytes.NewReader(nil), stubService{}, &memoryStub{}, &searchStub{}); err == nil {
 			t.Fatalf("expected validation for %v", args)
+		}
+	}
+}
+
+func TestSearchBatchUsesStrictJSONDefaultsAndOrderedItemErrors(t *testing.T) {
+	item := search.Response{RankingVersion: 1, Results: []search.Result{}}
+	service := &searchStub{batchResponse: search.BatchResponse{Total: 3, Succeeded: 2, Failed: 1, Results: []search.BatchResult{
+		{Index: 0, Response: item},
+		{Index: 1, Err: memory.NewError(memory.CodeValidationError, errors.New("invalid input"))},
+		{Index: 2, Response: item},
+	}}}
+	body := `{"searches":[{"query":"sqlite"},{"query":"worktrees","type":"decision","tags":["git"],"specific_tags":["Orca","Codex"],"min_importance":4,"min_confidence":3,"limit":5},{"query":"!!!"}]}`
+	output, err := ExecuteWithServices(context.Background(), []string{"search", "--input", "-"}, bytes.NewBufferString(body), stubService{}, &memoryStub{}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"ok\":true,\"data\":{\"summary\":{\"total\":3,\"succeeded\":2,\"failed\":1},\"results\":[{\"index\":0,\"ok\":true,\"data\":{\"ranking_version\":1,\"results\":[]}},{\"index\":1,\"ok\":false,\"error\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"invalid input\",\"details\":{}}},{\"index\":2,\"ok\":true,\"data\":{\"ranking_version\":1,\"results\":[]}}]}}\n"
+	if string(output) != want {
+		t.Fatalf("output=%s", output)
+	}
+	if len(service.batchInputs) != 3 || service.batchInputs[0].Limit != 10 || service.batchInputs[1].Limit != 5 || service.batchInputs[1].Type != "decision" || service.batchInputs[1].MinImportance != 4 || service.batchInputs[1].MinConfidence != 3 || len(service.batchInputs[1].Tags) != 1 || !slices.Equal(service.batchInputs[1].SpecificTags, []string{"Orca", "Codex"}) {
+		t.Fatalf("inputs=%#v", service.batchInputs)
+	}
+}
+
+func TestSearchCommandParsesSpecificTagsCSV(t *testing.T) {
+	service := &searchStub{response: search.Response{RankingVersion: 1, Results: []search.Result{}}}
+	if _, err := ExecuteWithServices(context.Background(), []string{"search", "query", "--specific-tags", "Orca,Codex"}, nil, stubService{}, &memoryStub{}, service); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(service.input.SpecificTags, []string{"Orca", "Codex"}) {
+		t.Fatalf("specific tags=%v", service.input.SpecificTags)
+	}
+}
+
+func TestSearchBatchRejectsInvalidWireAndIncompatibleArguments(t *testing.T) {
+	invalidBodies := []string{
+		`{"searches":[],"unknown":true}`,
+		`{"searches":[{"query":"x","unknown":true}]}`,
+		`{"searches":[]} trailing`,
+		`[]`,
+	}
+	for _, body := range invalidBodies {
+		if _, err := ExecuteWithServices(context.Background(), []string{"search", "--input", "-"}, bytes.NewBufferString(body), stubService{}, &memoryStub{}, &searchStub{}); project.Code(err) != project.CodeValidationError {
+			t.Fatalf("accepted body %q: %v", body, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"search", "query", "--input", "-"},
+		{"search", "--input", "file.json"},
+		{"search", "--input", "-", "--limit", "5"},
+		{"search", "--input", "-", "--type", "fact"},
+	} {
+		if _, err := ExecuteWithServices(context.Background(), args, bytes.NewBufferString(`{"searches":[{"query":"x"}]}`), stubService{}, &memoryStub{}, &searchStub{}); project.Code(err) != project.CodeValidationError {
+			t.Fatalf("accepted args %v: %v", args, err)
 		}
 	}
 }

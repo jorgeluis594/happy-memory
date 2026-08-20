@@ -149,11 +149,11 @@ func fts5Available(ctx context.Context, db *sql.DB) diagnostic.Check {
 	return passedCheck("fts5", "FTS5 is available", map[string]any{"available": true})
 }
 
-type ftsEntry struct{ title, content string }
+type ftsEntry struct{ title, content, specificTags string }
 
 func ftsConsistency(ctx context.Context, db *sql.DB) diagnostic.Check {
-	details := map[string]any{"missing": []string{}, "duplicates": []string{}, "extra": []string{}, "title_mismatches": []string{}, "content_mismatches": []string{}}
-	memories, err := queryText(ctx, db, `SELECT id,title,content FROM memories WHERE deleted_at IS NULL`)
+	details := map[string]any{"missing": []string{}, "duplicates": []string{}, "extra": []string{}, "title_mismatches": []string{}, "content_mismatches": []string{}, "specific_tags_mismatches": []string{}}
+	memories, err := queryText(ctx, db, `SELECT m.id,m.title,m.content,COALESCE((SELECT group_concat(normalized_name, ' ') FROM (SELECT t.normalized_name FROM memory_tags AS mt JOIN tags AS t ON t.project_id=mt.project_id AND t.id=mt.tag_id WHERE mt.project_id=m.project_id AND mt.memory_id=m.id ORDER BY t.normalized_name)), '') FROM memories AS m WHERE m.deleted_at IS NULL`)
 	if err != nil {
 		return failedCheck("fts_index_consistency", "FTS index consistency check failed", details)
 	}
@@ -161,7 +161,7 @@ func ftsConsistency(ctx context.Context, db *sql.DB) diagnostic.Check {
 	if err != nil {
 		return failedCheck("fts_index_consistency", "FTS index consistency check failed", details)
 	}
-	missing, extra, titles, contents := make([]string, 0), make([]string, 0), make([]string, 0), make([]string, 0)
+	missing, extra, titles, contents, specificTags := make([]string, 0), make([]string, 0), make([]string, 0), make([]string, 0), make([]string, 0)
 	for id, memory := range memories {
 		entry, ok := indexed[id]
 		if !ok {
@@ -174,6 +174,9 @@ func ftsConsistency(ctx context.Context, db *sql.DB) diagnostic.Check {
 		if entry.content != memory.content {
 			contents = append(contents, id)
 		}
+		if entry.specificTags != memory.specificTags {
+			specificTags = append(specificTags, id)
+		}
 	}
 	for id := range indexed {
 		if _, ok := memories[id]; !ok {
@@ -185,9 +188,11 @@ func ftsConsistency(ctx context.Context, db *sql.DB) diagnostic.Check {
 	slices.Sort(extra)
 	slices.Sort(titles)
 	slices.Sort(contents)
+	slices.Sort(specificTags)
 	details["missing"], details["duplicates"], details["extra"] = missing, duplicates, extra
 	details["title_mismatches"], details["content_mismatches"] = titles, contents
-	if len(missing)+len(duplicates)+len(extra)+len(titles)+len(contents) != 0 {
+	details["specific_tags_mismatches"] = specificTags
+	if len(missing)+len(duplicates)+len(extra)+len(titles)+len(contents)+len(specificTags) != 0 {
 		return failedCheck("fts_index_consistency", "FTS index is inconsistent", details)
 	}
 	return passedCheck("fts_index_consistency", "FTS index is consistent", details)
@@ -203,7 +208,7 @@ func queryText(ctx context.Context, db *sql.DB, query string) (map[string]ftsEnt
 	for rows.Next() {
 		var id string
 		var entry ftsEntry
-		if err = rows.Scan(&id, &entry.title, &entry.content); err != nil {
+		if err = rows.Scan(&id, &entry.title, &entry.content, &entry.specificTags); err != nil {
 			return nil, err
 		}
 		values[id] = entry
@@ -212,7 +217,7 @@ func queryText(ctx context.Context, db *sql.DB, query string) (map[string]ftsEnt
 }
 
 func queryFTS(ctx context.Context, db *sql.DB) (map[string]ftsEntry, []string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT memory_id,title,content FROM memory_fts`)
+	rows, err := db.QueryContext(ctx, `SELECT memory_id,title,content,specific_tags FROM memory_fts`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,7 +226,7 @@ func queryFTS(ctx context.Context, db *sql.DB) (map[string]ftsEntry, []string, e
 	for rows.Next() {
 		var id string
 		var entry ftsEntry
-		if err = rows.Scan(&id, &entry.title, &entry.content); err != nil {
+		if err = rows.Scan(&id, &entry.title, &entry.content, &entry.specificTags); err != nil {
 			return nil, nil, err
 		}
 		if _, ok := values[id]; ok {
